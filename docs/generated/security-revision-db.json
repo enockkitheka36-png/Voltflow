@@ -1,0 +1,8 @@
+{
+  "suite": "revision-db",
+  "status": "NOT_EXECUTED",
+  "executed": false,
+  "passed": false,
+  "reason": "No reachable Supabase test DB. Revision immutability is IMPLEMENTED in app logic and in 202608070003_trust_rpcs_and_immutability.sql, but DB-enforced immutability is NOT VERIFIED until this runs.",
+  "writtenAt": "2026-08-11T05:20:56.657Z"
+}

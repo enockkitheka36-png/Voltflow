@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vercel/
+*.log
+.DS_Store
+
+.vercel
+.env*
+!.env.local.example
+
+.npm-cache/
+.vite/

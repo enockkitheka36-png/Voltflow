@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-08-19T09:53:27.707Z",
+  "appVersion": "Voltflow 11.8.1",
+  "runtimeMode": "local-demo",
+  "liveSupabaseReachable": false,
+  "rlsTestsExecuted": false,
+  "rlsTestsPassed": false,
+  "storageTestsExecuted": false,
+  "storageTestsPassed": false,
+  "tenantAttackTested": false,
+  "tenantAttackPassed": false,
+  "revisionImmutabilityTested": false,
+  "revisionImmutabilityPassed": false,
+  "auditAppendOnlyTested": false,
+  "auditAppendOnlyPassed": false,
+  "authFlowTested": false,
+  "evidenceAccessTested": false,
+  "releaseAllowed": false,
+  "allowedUse": "internal-demo",
+  "notes": "One or more security suites NOT_EXECUTED (no live Supabase/Docker). Only internal-demo use is permitted."
+}

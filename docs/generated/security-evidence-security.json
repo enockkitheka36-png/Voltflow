@@ -1,0 +1,8 @@
+{
+  "suite": "evidence-security",
+  "status": "NOT_EXECUTED",
+  "executed": false,
+  "passed": false,
+  "reason": "No reachable Supabase Storage. Signed-URL + checksum + private-bucket flow is IMPLEMENTED (supabaseAdapter.js, evidenceAuthorization.js) but access control is NOT VERIFIED until this runs.",
+  "writtenAt": "2026-08-11T05:20:56.835Z"
+}

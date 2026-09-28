@@ -1,0 +1,102 @@
+{
+  "result": "BLOCKED_DOCKER_MISSING",
+  "generatedAt": "2026-09-21T18:00:45.681Z",
+  "appVersion": "Voltflow 11.8.1",
+  "schemaVersion": "11.7",
+  "dockerAvailable": false,
+  "fixtureSeedExecuted": false,
+  "fixtureSeedPassed": false,
+  "fixtureSeedError": null,
+  "steps": [
+    {
+      "name": "Repo path",
+      "status": "INFO",
+      "detail": "C:\\Users\\Administrator\\Documents\\Codex\\2026-08-05\\use-my-current-chatgpt-account-i\\work\\voltflow_unpacked"
+    },
+    {
+      "name": "APP_VERSION",
+      "status": "INFO",
+      "detail": "Voltflow 11.8.1"
+    },
+    {
+      "name": "SCHEMA_VERSION",
+      "status": "INFO",
+      "detail": "11.7"
+    },
+    {
+      "name": "Node",
+      "status": "INFO",
+      "detail": "v26.2.0"
+    },
+    {
+      "name": "Supabase CLI",
+      "status": "MISSING",
+      "detail": ""
+    },
+    {
+      "name": "Docker",
+      "status": "NOT AVAILABLE",
+      "detail": ""
+    },
+    {
+      "name": "Podman",
+      "status": "NOT AVAILABLE",
+      "detail": ""
+    },
+    {
+      "name": "Port 54321",
+      "status": "CLOSED",
+      "detail": ""
+    },
+    {
+      "name": "Port 54322",
+      "status": "CLOSED",
+      "detail": ""
+    },
+    {
+      "name": "Container runtime",
+      "status": "BLOCKED",
+      "detail": "Install Docker Desktop or Podman and ensure it is on PATH."
+    }
+  ],
+  "suites": {
+    "rls": {
+      "executed": false,
+      "passed": false,
+      "status": "NOT_EXECUTED"
+    },
+    "tenantAttack": {
+      "executed": false,
+      "passed": false,
+      "status": "NOT_EXECUTED"
+    },
+    "evidenceStorage": {
+      "executed": false,
+      "passed": false,
+      "status": "NOT_EXECUTED"
+    },
+    "revisionImmutability": {
+      "executed": false,
+      "passed": false,
+      "status": "NOT_EXECUTED"
+    },
+    "auditAppendOnly": {
+      "executed": false,
+      "passed": false,
+      "status": "NOT_EXECUTED"
+    }
+  },
+  "allowedUse": "internal-demo",
+  "decision": {
+    "Solarise internal development": "GO",
+    "Dummy-data demo": "GO",
+    "Vincent isolated staging": "HOLD",
+    "External EPC staging": "NO-GO",
+    "Real client data": "NO-GO",
+    "Real bank data": "NO-GO",
+    "Production": "NO-GO"
+  },
+  "limitations": [
+    "No use beyond internal-demo is permitted until this proof returns PASS_STAGING_REVIEW_GATE."
+  ]
+}

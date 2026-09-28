@@ -1,0 +1,8 @@
+{
+  "suite": "tenant-attack",
+  "status": "NOT_EXECUTED",
+  "executed": false,
+  "passed": false,
+  "reason": "No reachable Supabase test DB (need `supabase start` + SUPABASE_TEST_URL/ANON_KEY and seeded tenants A/B). Cross-tenant isolation is IMPLEMENTED in migrations but NOT SECURITY-VERIFIED until this runs.",
+  "writtenAt": "2026-08-11T05:20:56.555Z"
+}
