@@ -1,0 +1,94 @@
+/*
+ * vf_summarizeLoads — Voltflow load aggregation + classification (Zoho Creator standalone function).
+ * Reference: src/utils/loadEngine.js  summarizeLoads() + computeItemDerived().
+ *
+ * Classification (Supply_Scope on each Load row):
+ *   SOLAR     -> feeds PV energy basis (day/night kWh, connected kW)
+ *   BACKUP    -> feeds PV basis AND the battery/critical basis
+ *   GRID_ONLY -> active (billing) but NOT in PV/battery sizing
+ *   EXCLUDED  -> dropped entirely (never touches PV/battery/inverter/quote)
+ *
+ * Applies Demand_Factor_Pct and Duty_Cycle_Pct (fractions of 100). Diversity factors
+ * are applied later at the inverter stage (project-level running/surge diversity).
+ *
+ * Create in Creator: Settings → Functions → name "vf_summarizeLoads", return "Map",
+ * argument "projectId" (Number).
+ *
+ * ---- TEST VECTORS ----
+ * One SOLAR load 800W x1, Day 10h, Night 2h, Duty 100%, Demand 100% ->
+ *   dayKwh 8.0, nightKwh 1.6, dailyKwh 9.6, criticalKwh 0, connectedKw 0.8.
+ * Same load but Supply_Scope BACKUP -> criticalKwh 9.6 (also in dailyKwh).
+ * Same load but GRID_ONLY -> dailyKwh 0, gridOnlyKwh 9.6 (excluded from PV basis).
+ * Supply_Scope EXCLUDED -> ignored entirely, activeCount unchanged by it.
+ * Any active load with Day+Night > 24 -> invalid = true.
+ */
+
+map vf_summarizeLoads(int projectId)
+{
+	r = Map();
+	loads = Load[Project == input.projectId];
+
+	dayKwh = 0.0;
+	nightKwh = 0.0;
+	criticalKwh = 0.0;
+	connectedKw = 0.0;
+	surgeKw = 0.0;
+	demandKw = 0.0;
+	gridOnlyKwh = 0.0;
+	invalid = false;
+	activeCount = 0;
+
+	for each ld in loads
+	{
+		scope = if(ld.Supply_Scope == null, "SOLAR", ld.Supply_Scope);
+		if(scope != "EXCLUDED")
+		{
+			qty = if(ld.Qty == null, 1, ld.Qty);
+			w   = if(ld.Rated_W == null, 0, ld.Rated_W);
+			dh  = if(ld.Day_Hours == null, 0, ld.Day_Hours);
+			nh  = if(ld.Night_Hours == null, 0, ld.Night_Hours);
+			dutyFrac   = if(ld.Duty_Cycle_Pct == null, 1.0, ld.Duty_Cycle_Pct / 100.0);
+			demandFrac = if(ld.Demand_Factor_Pct == null, 1.0, ld.Demand_Factor_Pct / 100.0);
+			surgeMul   = if(ld.Surge_Multiplier == null, 1, ld.Surge_Multiplier);
+			if(surgeMul < 1) { surgeMul = 1; }
+
+			if((dh + nh) > 24) { invalid = true; }
+			activeCount = activeCount + 1;
+
+			ckw = (qty * w) / 1000.0;
+			itemDay = qty * (w / 1000.0) * dutyFrac * dh;
+			itemNight = qty * (w / 1000.0) * dutyFrac * nh;
+
+			if(scope == "SOLAR" || scope == "BACKUP")
+			{
+				connectedKw = connectedKw + ckw;
+				demandKw = demandKw + (ckw * demandFrac * dutyFrac);
+				dayKwh = dayKwh + itemDay;
+				nightKwh = nightKwh + itemNight;
+				surgeKw = surgeKw + (ckw * surgeMul);
+				if(scope == "BACKUP")
+				{
+					criticalKwh = criticalKwh + itemDay + itemNight;
+				}
+			}
+			else if(scope == "GRID_ONLY")
+			{
+				gridOnlyKwh = gridOnlyKwh + itemDay + itemNight;
+			}
+		}
+	}
+
+	dailyKwh = dayKwh + nightKwh;
+
+	r.put("activeCount", activeCount);
+	r.put("invalid", invalid);
+	r.put("dayKwh", dayKwh.round(2));
+	r.put("nightKwh", nightKwh.round(2));
+	r.put("dailyKwh", dailyKwh.round(2));
+	r.put("criticalKwh", criticalKwh.round(2));
+	r.put("gridOnlyKwh", gridOnlyKwh.round(2));
+	r.put("connectedKw", connectedKw.round(3));
+	r.put("demandKw", demandKw.round(3));
+	r.put("surgeKw", surgeKw.round(3));
+	return r;
+}

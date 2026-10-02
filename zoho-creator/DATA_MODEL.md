@@ -42,11 +42,15 @@ reference these field link-names.
 | Rated_W | Number | |
 | Day_Hours | Decimal | |
 | Night_Hours | Decimal | |
+| Duty_Cycle_Pct | Number | default 100 (fraction of rated actually drawn) |
 | Surge_Multiplier | Decimal | default 1 |
-| Supply_Scope | Dropdown | SOLAR / BACKUP / GRID_ONLY / EXCLUDED |
-| Critical | Checkbox | backup required |
+| Supply_Scope | Dropdown | SOLAR / BACKUP / GRID_ONLY / EXCLUDED — **this drives sizing** (BACKUP = battery basis) |
 | Demand_Factor_Pct | Number | default 100 |
-| Diversity_Factor_Pct | Number | default 100 |
+| Diversity_Factor_Pct | Number | default 100 (applied at inverter stage) |
+
+> Note: the battery/critical basis is **Supply_Scope = BACKUP** (mirrors the JS engine), not a
+> separate "critical" flag. SOLAR+BACKUP feed the PV energy basis; GRID_ONLY is billing-only;
+> EXCLUDED is dropped. See `deluge/loads.dg`.
 
 ## Form: Design_Revision  (Lookup: Project) — append-only
 | Field | Type | Notes |

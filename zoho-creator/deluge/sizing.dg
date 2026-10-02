@@ -59,35 +59,16 @@ map vf_computeSizing(int projectId)
 	if(pr < 0.45) { pr = 0.45; }
 	if(pr > 0.95) { pr = 0.95; }
 
-	// ---- aggregate committed loads ----
-	loads = Load[Project == input.projectId];
-	dayKwh = 0.0;
-	nightKwh = 0.0;
-	criticalKwh = 0.0;
-	connectedKw = 0.0;
-	surgeKw = 0.0;
-	invalid = false;
-	count = 0;
-	for each ld in loads
-	{
-		count = count + 1;
-		qty = if(ld.Qty == null, 1, ld.Qty);
-		w   = if(ld.Rated_W == null, 0, ld.Rated_W);
-		dh  = if(ld.Day_Hours == null, 0, ld.Day_Hours);
-		nh  = if(ld.Night_Hours == null, 0, ld.Night_Hours);
-		surgeMul = if(ld.Surge_Multiplier == null, 1, ld.Surge_Multiplier);
-		if((dh + nh) > 24) { invalid = true; }
-		dayKwh = dayKwh + (qty * w * dh) / 1000;
-		nightKwh = nightKwh + (qty * w * nh) / 1000;
-		connectedKw = connectedKw + (qty * w) / 1000;
-		if(surgeMul < 1) { surgeMul = 1; }
-		surgeKw = surgeKw + (qty * w * surgeMul) / 1000;
-		if(ld.Critical == true)
-		{
-			criticalKwh = criticalKwh + (qty * w * (dh + nh)) / 1000;
-		}
-	}
-	dailyKwh = dayKwh + nightKwh;
+	// ---- aggregate committed loads (scope-aware; see loads.dg) ----
+	// PV basis = SOLAR+BACKUP, critical/battery basis = BACKUP, GRID_ONLY/EXCLUDED
+	// are handled inside vf_summarizeLoads so sizing never double-counts them.
+	ls = vf_summarizeLoads(input.projectId);
+	invalid     = ls.get("invalid");
+	count       = ls.get("activeCount");
+	dailyKwh    = ls.get("dailyKwh");
+	criticalKwh = ls.get("criticalKwh");
+	connectedKw = ls.get("connectedKw");
+	surgeKw     = ls.get("surgeKw");
 
 	// ---- gating (mirrors JS: pending / invalid blocks pricing) ----
 	if(invalid)

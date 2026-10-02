@@ -36,6 +36,7 @@ import/paste into Creator**:
 - [x] Workspace scaffold
 - [x] Data model (v1 draft)
 - [x] Sizing function ported (PV + battery + inverter) with test vectors
-- [ ] Load classification, quote/VAT, reconciliation
+- [x] Load aggregation + classification (SOLAR/BACKUP/GRID_ONLY/EXCLUDED) ported; sizing consumes it
+- [ ] Quote/VAT, reconciliation
 - [ ] Pages / UI
 - [ ] Creator roles & permissions
