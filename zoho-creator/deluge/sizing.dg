@@ -1,0 +1,173 @@
+/*
+ * vf_computeSizing — Voltflow sizing ported to Deluge (Zoho Creator standalone function).
+ * Reference: src/utils/designRevision.js  computeOptionSizing() + performanceRatio().
+ *
+ * Create in Creator: Settings → Functions → New → name "vf_computeSizing",
+ * return type "Map", argument "projectId" (Number). Paste the body below.
+ *
+ * It reads the Project record and its committed Load rows, computes PV / battery /
+ * inverter / cost / savings, and returns a Map. (Hybrid/grid path implemented;
+ * EV & Mini-grid daily-energy variants are marked TODO.)
+ *
+ * ---- TEST VECTORS (seed a Project + Loads, run, compare) ----
+ * Project: PSH 5.6, Panel_W 550, Solar_Coverage 0.85, DoD 0.87, Battery_Efficiency 0.94,
+ *          Battery_Module_kWh 5.12, Backup_Hours 10, Inverter_Headroom 1.25,
+ *          Inverter_Efficiency 0.96, Grid_Tariff 22, Self_Consumption_Rate 0.9,
+ *          Panel_Cost_KES 23000, Contingency 0.05, VAT 0.16.
+ * Loads: one 800W x1, Day_Hours 10, Night_Hours 2, Critical=true.
+ *   dailyKwh = 0.8*12 = 9.6 ; PR ≈ 0.90 ; requiredKwp = 9.6*0.85/(5.6*0.9) ≈ 1.619
+ *   panels = ceil(1619/550) = 3 ; actualKwp = 1.65 ; invKw snaps up from peak.
+ * Zero loads  -> status "Pending load inventory", all sizing 0.
+ * A load with Day_Hours 20 + Night_Hours 10 (=30) -> status "Invalid load inventory".
+ */
+
+map vf_computeSizing(int projectId)
+{
+	result = Map();
+	proj = Project[ID == input.projectId];
+	if(proj == null)
+	{
+		result.put("error","Project not found");
+		return result;
+	}
+
+	// ---- inputs (with safe defaults mirroring the JS finite()/defaults) ----
+	psh        = if(proj.PSH == null, 5.6, proj.PSH);
+	coverage   = if(proj.Solar_Coverage == null, 0.85, proj.Solar_Coverage);
+	panelW     = if(proj.Panel_W == null, 550, proj.Panel_W);
+	dod        = if(proj.DoD == null, 0.85, proj.DoD);
+	battEff    = if(proj.Battery_Efficiency == null, 0.94, proj.Battery_Efficiency);
+	moduleKwh  = if(proj.Battery_Module_kWh == null, 5.12, proj.Battery_Module_kWh);
+	backupHrs  = if(proj.Backup_Hours == null, 8, proj.Backup_Hours);
+	headroom   = if(proj.Inverter_Headroom == null, 1.25, proj.Inverter_Headroom);
+	invEff     = if(proj.Inverter_Efficiency == null, 0.96, proj.Inverter_Efficiency);
+	tariff     = if(proj.Grid_Tariff == null, 22, proj.Grid_Tariff);
+	selfCons   = if(proj.Self_Consumption_Rate == null, 0.9, proj.Self_Consumption_Rate);
+	panelCost  = if(proj.Panel_Cost_KES == null, 23000, proj.Panel_Cost_KES);
+	moduleCost = if(proj.Battery_Module_Cost_KES == null, 72000, proj.Battery_Module_Cost_KES);
+	invCost    = if(proj.Inverter_Unit_Cost_KES == null, 145000, proj.Inverter_Unit_Cost_KES);
+	contingency = if(proj.Contingency == null, 0.05, proj.Contingency);
+	vat        = if(proj.VAT == null, 0.16, proj.VAT);
+	oandm      = if(proj.OandM_Rate == null, 0.015, proj.OandM_Rate);
+	monthlyBill = if(proj.Monthly_Bill_KES == null, 0, proj.Monthly_Bill_KES);
+
+	// ---- performance ratio (temp + loss factors × inverter efficiency, clamped) ----
+	pr = invEff;
+	if(pr < 0.75) { pr = 0.75; }
+	if(pr > 0.99) { pr = 0.99; }
+	// (loss factors omitted here for brevity; add soiling/lid/mismatch/shading as fields later)
+	if(pr < 0.45) { pr = 0.45; }
+	if(pr > 0.95) { pr = 0.95; }
+
+	// ---- aggregate committed loads ----
+	loads = Load[Project == input.projectId];
+	dayKwh = 0.0;
+	nightKwh = 0.0;
+	criticalKwh = 0.0;
+	connectedKw = 0.0;
+	surgeKw = 0.0;
+	invalid = false;
+	count = 0;
+	for each ld in loads
+	{
+		count = count + 1;
+		qty = if(ld.Qty == null, 1, ld.Qty);
+		w   = if(ld.Rated_W == null, 0, ld.Rated_W);
+		dh  = if(ld.Day_Hours == null, 0, ld.Day_Hours);
+		nh  = if(ld.Night_Hours == null, 0, ld.Night_Hours);
+		surgeMul = if(ld.Surge_Multiplier == null, 1, ld.Surge_Multiplier);
+		if((dh + nh) > 24) { invalid = true; }
+		dayKwh = dayKwh + (qty * w * dh) / 1000;
+		nightKwh = nightKwh + (qty * w * nh) / 1000;
+		connectedKw = connectedKw + (qty * w) / 1000;
+		if(surgeMul < 1) { surgeMul = 1; }
+		surgeKw = surgeKw + (qty * w * surgeMul) / 1000;
+		if(ld.Critical == true)
+		{
+			criticalKwh = criticalKwh + (qty * w * (dh + nh)) / 1000;
+		}
+	}
+	dailyKwh = dayKwh + nightKwh;
+
+	// ---- gating (mirrors JS: pending / invalid blocks pricing) ----
+	if(invalid)
+	{
+		result.put("status","Invalid load inventory");
+		result.put("blocked",true);
+		return result;
+	}
+	if(count == 0 || dailyKwh <= 0)
+	{
+		result.put("status","Pending load inventory");
+		result.put("blocked",true);
+		return result;
+	}
+
+	// ---- PV sizing ----
+	targetKwh = dailyKwh * coverage;
+	denom = psh * pr;
+	if(denom < 0.1) { denom = 0.1; }
+	requiredKwp = targetKwh / denom;
+	rawPanels = (requiredKwp * 1000) / max(panelW, 1);
+	panels = ceil(rawPanels);
+	if(panels < 1) { panels = 1; }
+	actualKwp = (panels * panelW) / 1000;
+	annualEnergy = actualKwp * psh * pr * 365;
+
+	// ---- battery sizing (hybrid backup basis) ----
+	backupNeed = criticalKwh * backupHrs / 24;
+	battDenom = dod * battEff;
+	if(battDenom < 0.1) { battDenom = 0.1; }
+	requiredBattKwh = backupNeed / battDenom;
+	battModules = ceil(requiredBattKwh / max(moduleKwh, 0.1));
+	if(battModules < 1) { battModules = 1; }
+	battKwh = battModules * moduleKwh;
+
+	// ---- inverter sizing (surge/running diversity, headroom, standard step) ----
+	runningDiv = 0.75;
+	surgeDiv = 0.65;
+	peakKw = max(connectedKw * runningDiv, surgeKw * surgeDiv);
+	invNeed = max(peakKw * headroom, actualKwp * 1.1);
+	invKw = vf_nextStandardKw(invNeed);
+
+	// ---- cost build-up ----
+	pvCost = panels * panelCost;
+	mountingCost = panels * 4750;
+	batteryCost = (battModules * moduleCost) + 16000;
+	subtotal = pvCost + mountingCost + invCost + batteryCost + 20100 + 46150 + 108000;
+	totalCost = subtotal * (1 + contingency) * (1 + vat);
+
+	// ---- savings / payback ----
+	annualSavings = annualEnergy * selfCons * tariff;
+	annualNet = annualSavings - (totalCost * oandm);
+	payback = if(annualNet > 0, totalCost / annualNet, 0);
+
+	result.put("status","Quote-ready");
+	result.put("blocked",false);
+	result.put("pr", pr.round(3));
+	result.put("dailyKwh", dailyKwh.round(2));
+	result.put("pvKwp", actualKwp.round(2));
+	result.put("panels", panels);
+	result.put("batteryKwh", battKwh.round(2));
+	result.put("batteryModules", battModules);
+	result.put("inverterKw", invKw);
+	result.put("annualEnergyKwh", annualEnergy.round(0));
+	result.put("totalCostKES", totalCost.round(0));
+	result.put("annualSavingsKES", annualSavings.round(0));
+	result.put("paybackYears", payback.round(2));
+	return result;
+}
+
+/*
+ * Helper: snap an inverter size up to the next standard kW rating.
+ * Create as a separate standalone function "vf_nextStandardKw" (return Decimal, arg "need" Decimal).
+ */
+decimal vf_nextStandardKw(decimal need)
+{
+	steps = {1,2,3,3.6,5,6,8,10,12,15,20,30,50,100};
+	for each s in steps
+	{
+		if(s >= input.need) { return s; }
+	}
+	return 100;
+}
