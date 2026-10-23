@@ -558,11 +558,14 @@
 
 /* v11.7.1 — classification / bank-pilot banner */
 .vf-pilot-banner {
-  font-size: 0.76rem; line-height: 1.4; color: #78350f;
-  background: #fffbeb; border: 1px solid #fcd34d; border-radius: var(--radius-md, 8px);
-  padding: 0.45rem 0.8rem; margin-bottom: 1rem;
+  font-size: 0.75rem; line-height: 1.5; color: #475569;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: var(--radius-md, 8px);
+  padding: 0.3rem 0.65rem; margin-bottom: 0.75rem;
 }
-.vf-pilot-banner.bank { background: #eff6ff; border-color: #bfdbfe; color: #1e3a8a; font-weight: 600; }
+.vf-pilot-banner summary { cursor: pointer; }
+.vf-pilot-banner summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; border-radius: 3px; }
+.vf-pilot-banner-details { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e2e8f0; }
+.vf-pilot-banner.bank { background: #f8fafc; border-color: #e2e8f0; color: #475569; }
 
 .vf-safe-mode-banner {
   display: flex;

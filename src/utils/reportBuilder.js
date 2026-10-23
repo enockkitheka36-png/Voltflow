@@ -236,12 +236,25 @@ function buildLender(project, sizing, readiness, borehole, evidence) {
 
 export function buildReport(mode, ctx = {}) {
   const m = REPORT_MODES.includes(mode) ? mode : "client";
-  const { project = {}, sizing = {}, readiness = {}, borehole = null, boreholeChecklist = null, evidence = null } = ctx;
+  const { project = {}, sizing = {}, readiness = {}, borehole: boreholeInput = null, boreholeChecklist = null, evidence = null } = ctx;
+  const borehole = project.borehole?.enabled === false ? null : boreholeInput;
+  if (["client", "lender"].includes(m) && project.equipmentSelection?.enabled && (!sizing.equipment?.quoteReady || sizing.quoteReady === false)) throw new Error("Resolve equipment matching and sizing checks before generating a commercial report.");
   let sections;
   if (m === "engineer") sections = buildEngineer(project, sizing, readiness, borehole);
   else if (m === "technician") sections = buildTechnician(project, sizing, readiness, borehole, boreholeChecklist);
   else if (m === "lender") sections = buildLender(project, sizing, readiness, borehole, evidence);
   else sections = buildClient(project, sizing, readiness, borehole);
+  if (sizing.equipment?.enabled) sections.splice(1, 0, {
+    heading: "Documented equipment matching", type: "kv", items: [
+      ["Matching status", sizing.equipment.status],
+      ["PV module", sizing.equipment.models.panel || "Unverified"],
+      ["Inverter", sizing.equipment.models.inverter || "Unverified"],
+      ["Battery", `${sizing.batteryModules} × ${sizing.equipment.models.battery || "Unverified"}`],
+      ["Pricing basis", sizing.equipment.commercialBasis === "SUPPLIER_QUOTE" ? `Supplier quote reference: ${project.equipmentSelection?.priceReference || "missing"}` : "Planning estimates; not a supplier offer"],
+      ["Manufacturer source set", `${sizing.equipment.catalogueVersion}; ${Object.values(sizing.equipment.sourceRevisions).join("; ")}`],
+      ["Scope", sizing.equipment.scope],
+    ],
+  });
 
   const disclaimers = [FEASIBILITY_DISCLAIMER];
   if (borehole) disclaimers.push(BOREHOLE_DISCLAIMER);

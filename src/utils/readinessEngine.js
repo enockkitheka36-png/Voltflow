@@ -60,6 +60,10 @@ export function buildProjectReadiness(
   const night = computeNightAutonomy(loads, project.loadAssessmentMode || "Residential", sizing, project);
 
   const sections = {};
+  const equipmentBlocked = !!sizing.equipment?.enabled && !sizing.equipment.quoteReady;
+  if (sizing.equipment?.enabled) sections.equipmentMatching = section("equipmentMatching", "Equipment matching", "assets-lib", "Review equipment matches",
+    [{ label: "Documented equipment checks complete", ok: !equipmentBlocked }], !equipmentBlocked,
+    { critical: equipmentBlocked, note: sizing.equipment.scope });
 
   // ── Startup ────────────────────────────────────────────────────────────────
   sections.startup = section("startup", "Project started", "field-dashboard", "Open dashboard",
@@ -131,14 +135,16 @@ export function buildProjectReadiness(
 
   // ── Inverter & safety ────────────────────────────────────────────────────────
   const coldVocOk = sizing.coldVocOk !== false;
+  const inverterSupported = sizing.inverterSizing?.loadSupported !== false && !sizing.inverterSizing?.catalogueExceeded;
   sections.inverterSafety = section("inverterSafety", "Inverter & safety", "inverter", "Review Inverter + Safety",
     [
       { label: "Load inventory committed", ok: !loadInventoryBlocked },
       { label: "Inverter sized", ok: !loadInventoryBlocked && (Number(sizing.inverterKw) || 0) > 0 },
+      { label: "Inverter supports requested sizing basis", ok: inverterSupported },
       { label: "Phase selected", ok: !!project.phase },
       { label: "Cold Voc within inverter limit", ok: coldVocOk },
       { label: "Inverter max DC voltage set", ok: (Number(project.inverterMaxDcV) || 0) > 0 },
-    ], false, { highlightId: "cold-voc-card", critical: !coldVocOk });
+    ], false, { highlightId: "cold-voc-card", critical: !coldVocOk || !inverterSupported });
 
   // ── Engineering compliance ───────────────────────────────────────────────────
   const dcDropOk = (sizing.dcDropPct ?? 0) <= 0.015;
@@ -169,11 +175,11 @@ export function buildProjectReadiness(
   sections.boq = section("boq", "Bill of quantities", "boq", "Open BoQ",
     [
       { label: "Load inventory committed", ok: !loadInventoryBlocked },
-      { label: "Project value computed", ok: !loadInventoryBlocked && (Number(sizing.totalCost) || 0) > 0 },
+      { label: "Project value computed", ok: !loadInventoryBlocked && !equipmentBlocked && (Number(sizing.totalCost) || 0) > 0 },
     ], false, { highlightId: "boq-table", note: loadInventoryBlocked ? (sizing.quoteBlockedReason || "Pending load inventory") : null });
 
   // ── Proposal ─────────────────────────────────────────────────────────────────
-  const noCriticalYet = coldVocOk && bmsOk && dcAmpOk && acAmpOk && !phaseMismatch;
+  const noCriticalYet = coldVocOk && bmsOk && dcAmpOk && acAmpOk && !phaseMismatch && !equipmentBlocked;
   sections.proposal = section("proposal", "Proposal", "proposal", "Open Proposal",
     [
       { label: "Client + system type set", ok: hasClient && !!systemType },
@@ -221,6 +227,7 @@ export function buildProjectReadiness(
   });
 
   const criticalIssues = [];
+  if (equipmentBlocked) criticalIssues.push({ label: `Equipment matching ${sizing.equipment.status.toLowerCase()}`, actionTab: "assets-lib", highlightId: "equipment-matching-title" });
   if (!loadInventoryBlocked && !coldVocOk) criticalIssues.push({ label: "Cold Voc exceeds inverter max DC voltage", actionTab: "inverter", highlightId: "cold-voc-card" });
   if (!loadInventoryBlocked && !bmsOk) criticalIssues.push({ label: "Inverter battery current exceeds BMS discharge limit", actionTab: "inverter", highlightId: "cold-voc-card" });
   if (!loadInventoryBlocked && !dcAmpOk) criticalIssues.push({ label: "DC cable ampacity insufficient", actionTab: "inverter", highlightId: "compliance-card" });
@@ -239,6 +246,7 @@ export function buildProjectReadiness(
   // Overall score — average of the "core" sections (delivery/handover excluded so
   // a fresh feasibility project isn't dragged down by not-yet-started delivery).
   const coreKeys = ["clientDetails", "siteSurvey", "loadInventory", "pvSizing", "batterySizing", "inverterSafety", "engineeringCompliance", "boq", "proposal"];
+  if (sizing.equipment?.enabled) coreKeys.push("equipmentMatching");
   const overallScore = Math.round(coreKeys.reduce((s, k) => s + sections[k].score, 0) / coreKeys.length);
 
   const readyForEngineeringReview = !loadInventoryBlocked && validApplied.length > 0 && !hasUnappliedLoadChanges && (Number(sizing.totalCost) || 0) > 0;

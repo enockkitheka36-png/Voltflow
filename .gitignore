@@ -10,3 +10,17 @@ dist/
 
 .npm-cache/
 .vite/
+qa/.sizing-audit-cache/
+.catalystrc
+catalyst-functions/*/node_modules
+*.pid
+VOLTFLOW_GPT_HANDOFF.md
+qa/.*-cache/
+qa/startup-performance-build/
+qa/*-results.json
+qa/regression-*.txt
+qa/regression-summary.json
+qa/equipment-matching-fixture.json
+qa/startup-catalyst-build.json
+qa/pdf-layout/
+docs/generated/catalyst-*.json

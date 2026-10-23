@@ -1,5 +1,6 @@
 import React from "react";
 import { clearLocalProjectData } from "../utils/projectStorage.js";
+import { BrandLogo } from "./BrandLogo.jsx";
 
 function safeModeUrl() {
   const url = new URL(window.location.href);
@@ -39,7 +40,7 @@ export class AppErrorBoundary extends React.Component {
     return (
       <main className="vf-crash-fallback" role="alert">
         <div className="vf-crash-fallback-panel">
-          <img src="/logo.png" alt="Voltflow" />
+          <BrandLogo style={{ height: "42px" }} />
           <h1>Voltflow could not finish loading</h1>
           <p>The page stopped safely. Saved browser data has not been deleted.</p>
           <div className="vf-crash-fallback-actions">

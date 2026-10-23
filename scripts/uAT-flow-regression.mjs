@@ -42,8 +42,8 @@ test("Scenario 9-10: export + import present", () => {
   assert.ok(/applyPendingImport|pendingImport/.test(app), "staged import present");
 });
 
-test("Scenario 11-12: Client View + Bank Pilot Mode selectable", () => {
-  assert.ok(/"client", "👤 Client"/.test(app) && /"bank", "🏦 Bank"/.test(app), "view-mode toggle offers client + bank");
+test("Scenario 11-12: Client View + Finance view selectable", () => {
+  assert.ok(/"client", "👤 Client"/.test(app) && /"bank", "🏦 Finance"/.test(app), "view-mode toggle offers client + finance");
   assert.strictEqual(isTabAllowedInView("bank-flow", "bank"), true);
   assert.strictEqual(isTabAllowedInView("bank-flow", "engineer"), true, "engineer can also open it");
 });

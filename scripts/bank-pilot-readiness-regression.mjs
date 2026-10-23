@@ -11,6 +11,7 @@ import { isTabAllowedInView, BANK_SAFE_TABS, VALID_TABS } from "../src/utils/nav
 import { VIEW_MODES, normalizeViewMode } from "../src/utils/schemaMigration.js";
 import { SCENARIOS, buildScenarioProject } from "../src/utils/scenarios.js";
 import { APP_VERSION } from "../src/utils/schemaMigration.js";
+import { getWorkspaceNavigation } from "../src/utils/workspaceNavigation.js";
 
 let passed = 0, failed = 0;
 function test(name, fn) { try { fn(); console.log("  PASS: " + name); passed++; } catch (e) { console.error("  FAIL: " + name); console.error("    " + e.message); failed++; } }
@@ -23,7 +24,9 @@ test("1. Bank Pilot Mode is a real view mode + component + route", () => {
   assert.strictEqual(normalizeViewMode("bank"), "bank");
   assert.ok(/function BankPilotFlow/.test(app), "BankPilotFlow component");
   assert.ok(/active === "bank-flow"/.test(app), "bank-flow route");
-  assert.ok(/btn\("bank-flow"/.test(app), "bank nav entry");
+  assert.ok(/<WorkspaceNavigation groups=\{groups\}/.test(app), "shared menu renderer is wired");
+  const bankKeys = getWorkspaceNavigation({ viewMode: "bank" }).flatMap((group) => group.items.map((item) => item.key));
+  assert.deepStrictEqual(bankKeys.sort(), ["bank-flow", "field-dashboard", "proposal", "storage"].sort(), "bank menu remains restricted");
 });
 
 test("2. Bank flow shows only the simplified steps (guided)", () => {
@@ -70,6 +73,13 @@ test("11-14. Studio / Borehole / Proposal / Save-Load still present (not removed
   assert.ok(/function SolarBorehole/.test(app), "Borehole present");
   assert.ok(/function Proposal\(/.test(app), "Proposal present");
   assert.ok(/exportProjectJson|importProjectJson/.test(app), "Save/Load export wired");
+});
+
+test("Finance display label preserves saved modes and battery terminology", () => {
+  assert.match(app, /"bank", "🏦 Finance"/);
+  assert.doesNotMatch(app, /"bank", "🏦 (?:Bank|Financial)"/);
+  assert.strictEqual(normalizeViewMode("bank"), "bank");
+  assert.match(app, /label="Battery Bank"/);
 });
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

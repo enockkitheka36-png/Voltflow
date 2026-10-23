@@ -10,6 +10,7 @@
 // backward compatible with callers that predate the simulation studio.
 export function calculateReadiness(project, loads, survey, sizing, layoutInfo) {
   const blockers = [];
+  if (sizing?.equipment?.enabled && !sizing.equipment.quoteReady) blockers.push(`Equipment matching ${sizing.equipment.status.toLowerCase()}. Resolve the Asset library checks before quoting.`);
   const warnings = [];
   const recommendations = [];
   const loadInventoryPending = !!sizing?.loadInventoryPending || (Array.isArray(loads) ? loads.length : 0) === 0 || (sizing?.dailyKwh ?? 0) <= 0;
@@ -92,6 +93,7 @@ export function calculateReadiness(project, loads, survey, sizing, layoutInfo) {
   ];
   const engScore = engItems.reduce((s, i) => s + (i.pass ? i.pts : 0), 0);
 
+  if (sizing.inverterSizing?.loadSupported === false || sizing.inverterSizing?.catalogueExceeded) blockers.push("Selected inverter is outside supported sizing limits. Qualified engineering design is required before quoting.");
   if (!sizing.coldVocOk) blockers.push("Cold Voc exceeds inverter max DC voltage. Reduce panels per string before quoting.");
   if ((sizing.batteryInputA ?? 0) > (sizing.bmsMaxDischargeA ?? 999)) {
     blockers.push("Inverter peak battery draw exceeds BMS discharge limit. Add parallel battery strings.");
@@ -249,6 +251,14 @@ export function computeGovernanceStatus(project, sizing, readiness) {
   } else if (blockers?.some(b => b.includes("CRITICAL") || b.includes("asbestos"))) {
     status = "High risk — do not send";
     nextAction.push("Resolve critical safety blockers immediately");
+  } else if (sizing?.equipment?.enabled && !sizing.equipment.quoteReady) {
+    status = "Engineering review required";
+    approvals.push({ role: "Design Engineer", reason: `Equipment matching ${sizing.equipment.status.toLowerCase()}` });
+    nextAction.push("Resolve documented equipment checks in Asset library before quoting");
+  } else if (sizing?.inverterSizing?.loadSupported === false || sizing?.inverterSizing?.catalogueExceeded) {
+    status = "Engineering review required";
+    approvals.push({ role: "Design Engineer", reason: "Inverter demand exceeds supported sizing limits" });
+    nextAction.push("Design and verify a suitable inverter arrangement before quoting");
   } else if (!sizing?.coldVocOk) {
     status = "Engineering review required";
     approvals.push({ role: "Design Engineer", reason: "Cold Voc string safety violation" });

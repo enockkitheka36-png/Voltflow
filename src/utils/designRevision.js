@@ -1,6 +1,10 @@
 import { canonicalize, hashCanonicalJson } from "../platform/canonicalJson.js";
+import { calculateQuote, projectQuoteLines } from "./quoteEngine.js";
+import { computeInverterSizing } from "./inverterCoherence.js";
+import { normalizeEquipmentSelection, resolveEquipmentProject, equipmentPanelCount, equipmentBatteryCount, gateEquipmentSizing } from "./equipmentMatching.js";
+import { EQUIPMENT_CATALOGUE_VERSION } from "./equipmentCatalogue.js";
 
-export const DESIGN_CALCULATION_VERSION = "11.8.0";
+export const DESIGN_CALCULATION_VERSION = "11.8.3";
 export const DEFAULT_INVERTER_STEPS_KW = [1, 2, 3, 3.6, 5, 6, 8, 10, 12, 15, 20, 30, 50, 100];
 
 const EV_KW = { L1: 3.7, L2: 7.4, DCFC50: 50, DCFC150: 150, HPC350: 350 };
@@ -77,6 +81,7 @@ export function buildDesignInputs(input = {}) {
       mountingPerPanel: project.mountingPerPanel,
     },
     batterySelection: input.batterySelection || project.batterySelection || { selection_mode: "AUTO" },
+    equipmentMatching: project.equipmentSelection?.enabled ? { selection: normalizeEquipmentSelection(project.equipmentSelection), catalogueVersion: EQUIPMENT_CATALOGUE_VERSION } : null,
     batteryHardwareAssumptions: {
       chemistry: project.batteryChemistry,
       moduleKwh: project.batteryModuleKwh,
@@ -92,6 +97,8 @@ export function buildDesignInputs(input = {}) {
     },
     inverterCommercialAssumptions: {
       unitCost: project.inverterUnitCost,
+      sizingBasis: project.inverterSizingBasis,
+      manualKw: project.manualInverterKw,
     },
     gridMode: input.gridMode || project.systemType || "",
     generator: input.generator || {
@@ -141,11 +148,26 @@ export function buildDesignInputs(input = {}) {
       evChargersTotal: project.evChargersTotal,
       evDailyChargingHours: project.evDailyChargingHours,
       evOccupancy: project.evOccupancy,
+      evPeakSimultaneous: project.evPeakSimultaneous,
+      evBatteryBufferEnabled: project.evBatteryBufferEnabled,
+      evPeakBufferHours: project.evPeakBufferHours,
+      evTariffKes: project.evTariffKes,
       mgHouseholds: project.mgHouseholds,
       mgHouseholdLoadKwh: project.mgHouseholdLoadKwh,
       mgCommercialCustomers: project.mgCommercialCustomers,
       mgCommercialLoadKwh: project.mgCommercialLoadKwh,
       mgAnchorLoad: project.mgAnchorLoad,
+      mgResidentialTariff: project.mgResidentialTariff,
+      mgCommercialTariff: project.mgCommercialTariff,
+      mgAnchorTariff: project.mgAnchorTariff,
+      mgOpexPerSubscriberYr: project.mgOpexPerSubscriberYr,
+      mgCapexDistribution: project.mgCapexDistribution,
+      gensetFuelLPerHour: project.gensetFuelLPerHour,
+      gensetFuelCostKes: project.gensetFuelCostKes,
+      gensetRunHoursPerDay: project.gensetRunHoursPerDay,
+      gensetMaintenanceCostYr: project.gensetMaintenanceCostYr,
+      gensetSolarDirectDisplacement: project.gensetSolarDirectDisplacement,
+      gensetBatteryTimeShiftDisplacement: project.gensetBatteryTimeShiftDisplacement,
     },
   });
 }
@@ -167,6 +189,7 @@ export function settleFailedDesignRevision(existing = {}) {
 }
 
 export function computeOptionSizing(project = {}, loads = [], config = {}) {
+  project = resolveEquipmentProject(project);
   const pr = performanceRatio(project);
   const isEV = project.systemType === "EV charging";
   const isMG = project.systemType === "Mini-grid";
@@ -175,7 +198,7 @@ export function computeOptionSizing(project = {}, loads = [], config = {}) {
     ? finite(EV_KW[project.evChargerType], 7.4) * finite(project.evChargersTotal) * finite(project.evDailyChargingHours) * finite(project.evOccupancy)
     : 0;
   const mgDailyKwh = isMG
-    ? finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh)
+    ? finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) + finite(project.mgAnchorLoad) * 12
     : 0;
   const dayKwh = loads.reduce((sum, load) => sum + finite(load.qty) * finite(load.watts) * finite(load.dayHours) / 1000, 0);
   const nightKwh = loads.reduce((sum, load) => sum + finite(load.qty) * finite(load.watts) * finite(load.nightHours) / 1000, 0);
@@ -198,14 +221,17 @@ export function computeOptionSizing(project = {}, loads = [], config = {}) {
 
   const targetKwh = dailyKwh * finite(project.solarCoverage);
   const requiredKwp = targetKwh / Math.max(finite(project.psh) * pr, 0.1);
-  const panels = Math.max(1, Math.ceil(requiredKwp * 1000 / Math.max(finite(project.panelW), 1)));
+  const panels = equipmentPanelCount(project, Math.max(1, Math.ceil(requiredKwp * 1000 / Math.max(finite(project.panelW), 1))));
   const actualKwp = panels * finite(project.panelW) / 1000;
   const annualEnergy = actualKwp * finite(project.psh) * pr * 365;
   const backupNeed = (isOff || isMG)
     ? dailyKwh * finite(project.autonomyDays)
     : criticalDailyKwh * finite(project.backupHours) / 24;
-  const requiredBatteryKwh = backupNeed / Math.max(finite(project.dod) * finite(project.batteryEfficiency), 0.1);
-  const battModules = Math.max(1, Math.ceil(requiredBatteryKwh / Math.max(finite(project.batteryModuleKwh), 0.1)));
+  const evBufferKwh = isEV && project.evBatteryBufferEnabled
+    ? finite(EV_KW[project.evChargerType], 7.4) * finite(project.evPeakSimultaneous) * finite(project.evPeakBufferHours, 1) / Math.max(finite(project.dod) * finite(project.batteryEfficiency), 0.1)
+    : 0;
+  const requiredBatteryKwh = Math.max(backupNeed / Math.max(finite(project.dod) * finite(project.batteryEfficiency), 0.1), evBufferKwh);
+  const battModules = equipmentBatteryCount(project, Math.max(1, Math.ceil(requiredBatteryKwh / Math.max(finite(project.batteryModuleKwh), 0.1))));
   const battKwh = battModules * finite(project.batteryModuleKwh);
   const usableKwh = battKwh * finite(project.dod) * finite(project.batteryEfficiency);
   const backupReferenceKw = backupNeed / Math.max((isOff || isMG) ? 24 * finite(project.autonomyDays) : finite(project.backupHours), 1);
@@ -214,25 +240,30 @@ export function computeOptionSizing(project = {}, loads = [], config = {}) {
   const runningDiversity = finite(project.runningLoadDiversityFactor, 0.75) || 0.75;
   const surgeDiversity = finite(project.surgeDiversityFactor, 0.65) || 0.65;
   const connectedKw = loads.reduce((sum, load) => sum + finite(load.qty) * finite(load.watts), 0) / 1000;
-  const peakKw = Math.max(connectedKw * runningDiversity, surgeKw * surgeDiversity);
-  const invKw = nextStandard(Math.max(peakKw * finite(project.inverterHeadroom), actualKwp * 1.1), config.inverterStepsKw);
-  const pvCost = panels * finite(project.panelCost);
-  const mountingCost = panels * finite(project.mountingPerPanel);
+  const inverterSizing = computeInverterSizing({ connectedW: connectedKw * 1000, surgeKw, actualKwp, runningDiversity, surgeDiversity, inverterHeadroom: project.inverterHeadroom, basis: project.inverterSizingBasis, manualInverterKw: project.manualInverterKw });
+  const invKw = config.inverterStepsKw && !project.equipmentSelection?.enabled ? nextStandard(inverterSizing.engineeringMinInvKw, config.inverterStepsKw) : inverterSizing.selectedInverterKw;
   const batteryCost = battModules * finite(project.batteryModuleCost) + 16000;
-  const specialistCost = project.systemType === "Genset hybrid" ? 85000 : 0;
-  const subtotal = pvCost + mountingCost + finite(project.inverterUnitCost) + batteryCost
-    + finite(project.monitoringCost) + finite(project.cablingProtectionCost) + finite(project.epcCost) + specialistCost;
-  const totalCost = subtotal * (1 + finite(project.contingency)) * (1 + finite(project.vat));
-  const annualSavingsRaw = annualEnergy * finite(project.selfConsumptionRate) * finite(project.gridTariff);
+  const subscribers = isMG ? finite(project.mgHouseholds) + finite(project.mgCommercialCustomers) + (finite(project.mgAnchorLoad) > 0 ? 1 : 0) : 0;
+  const chargerCosts = { L1: 85000, L2: 180000, DCFC50: 2500000, DCFC150: 7800000, HPC350: 18000000 };
+  const specialistCost = isEV ? (chargerCosts[project.evChargerType] || chargerCosts.L2) * finite(project.evChargersTotal) + finite(project.evChargersTotal) * 25000 + (finite(project.evChargersTotal) >= 4 ? 48000 : 0) : isMG ? subscribers * 6500 + 85000 : project.systemType === "Genset hybrid" ? 85000 : 0;
+  const quote = calculateQuote(projectQuoteLines(project, { panels, inverterCost: finite(project.inverterUnitCost), batteryCost, specialistCapex: specialistCost }), { currency: project.quoteCurrency || "KES", version: project.pricingPolicyVersion, contingency_pct: finite(project.contingency) * 100 }, { version: project.taxRuleVersion, codes: { VAT_STANDARD: finite(project.vat) * 100, VAT_ZERO: 0, VAT_EXEMPT: null } });
+  const totalCost = quote.total_gross;
+  const investmentCost = totalCost + (isMG ? finite(project.mgCapexDistribution) : 0);
+  const annualSavingsRaw = Math.min(annualEnergy * finite(project.selfConsumptionRate), dailyKwh * 365) * finite(project.gridTariff);
   const billLimit = finite(project.monthlyBill) * 12 * finite(project.solarCoverage);
   const annualSavings = project.capSavingsToBill ? Math.min(annualSavingsRaw, billLimit) : annualSavingsRaw;
-  const annualNet = annualSavings - totalCost * finite(project.oAndMRate);
-  return {
+  const annualOM = totalCost * finite(project.oAndMRate);
+  const displacement = Math.min(0.85, finite(project.solarCoverage) * finite(project.gensetSolarDirectDisplacement, 0.65) + (usableKwh > 0 ? finite(project.gensetBatteryTimeShiftDisplacement, 0.15) : 0));
+  const gensetSavings = project.systemType === "Genset hybrid" ? finite(project.gensetFuelLPerHour) * finite(project.gensetFuelCostKes) * finite(project.gensetRunHoursPerDay) * displacement * 365 + finite(project.gensetMaintenanceCostYr) * displacement * 0.5 : 0;
+  const miniGridRevenue = (finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) * finite(project.mgResidentialTariff) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) * finite(project.mgCommercialTariff) + finite(project.mgAnchorLoad) * 12 * finite(project.mgAnchorTariff)) * 365;
+  const annualNet = isEV ? dailyKwh * 365 * (finite(project.evTariffKes) - finite(project.gridTariff)) - annualOM : isMG ? miniGridRevenue - subscribers * finite(project.mgOpexPerSubscriberYr) - annualOM : annualSavings + gensetSavings - annualOM;
+  return gateEquipmentSizing(project, {
     pr, panels, actualKwp, battKwh, battModules, invKw, totalCost, annualSavings, annualNet,
-    payback: annualNet > 0 ? totalCost / annualNet : Infinity, autonomyH, dailyKwh,
+    payback: annualNet > 0 ? investmentCost / annualNet : Infinity, autonomyH, dailyKwh, investmentCost,
+    requiredKwp, backupEnergyNeed: backupNeed, evBatteryBufferKwh: evBufferKwh, peakKw: inverterSizing.peakKw, loadBasedInvKw: inverterSizing.loadBasedInvKw,
     loadInventoryPending: false, loadInventoryInvalid: false, loadInventoryBlocked: false,
-    quoteReady: true, quoteBlockedReason: null, warnings: [],
-  };
+    quoteReady: inverterSizing.loadSupported && !inverterSizing.catalogueExceeded, quoteBlockedReason: !inverterSizing.loadSupported || inverterSizing.catalogueExceeded ? "Inverter engineering review required" : null, warnings: !inverterSizing.loadSupported || inverterSizing.catalogueExceeded ? ["Selected inverter exceeds supported sizing limits."] : [],
+  });
 }
 
 export function deriveSystemOptions(input = {}) {

@@ -22,6 +22,7 @@
     "test:market": "node scripts/market-ready-alpha-regression.mjs",
     "test:borehole-ui": "node scripts/borehole-ui-regression.mjs",
     "test:proposal": "node scripts/proposal-pdf-regression.mjs",
+    "test:proposal-actions": "node scripts/proposal-actions-regression.mjs",
     "test:reports": "node scripts/reports-regression.mjs",
     "test:evidence": "node scripts/evidence-audit-regression.mjs",
     "test:studio": "node scripts/studio-regression.mjs",
@@ -45,9 +46,17 @@
     "test:access-revocation": "node scripts/access-revocation-db-test.mjs",
     "test:security-suites": "npm run test:tenant-attack && npm run test:revision-db && npm run test:evidence-security && npm run test:audit-db && npm run test:access-revocation",
     "test:security-gate": "node scripts/release-security-gate.mjs",
+    "test:catalyst-gate": "node scripts/release-catalyst-gate.mjs",
+    "test:catalyst-gate-unit": "node scripts/catalyst-release-gate-regression.mjs",
+    "test:save-recovery": "node scripts/save-recovery-regression.mjs",
+    "test:workspace-ux": "node scripts/workspace-ux-regression.mjs",
+    "test:sizing-audit": "node scripts/sizing-end-to-end-audit.mjs",
+    "test:motion-audit": "node scripts/motion-accessibility-audit.mjs",
+    "test:equipment": "node scripts/equipment-matching-regression.mjs",
+    "test:startup-performance": "node scripts/startup-performance-regression.mjs",
     "proof:supabase": "node scripts/run-supabase-security-proof.mjs",
     "test:uat": "node scripts/uAT-flow-regression.mjs",
-    "test:all": "npm run test:workflow && npm run test:energy && npm run test:ui && npm run test:startup && npm run test:crashfix && npm run test:delivery && npm run test:input && npm run test:readiness && npm run test:night && npm run test:navigation && npm run test:coherence && npm run test:borehole && npm run test:borehole-ui && npm run test:market && npm run test:proposal && npm run test:reports && npm run test:evidence && npm run test:studio && npm run test:templates && npm run test:proposal-studio && npm run test:assets && npm run test:explainers && npm run test:bank && npm run test:security && npm run test:pilot && npm run test:data-integrity && npm run test:uat && npm run test:trust && npm run test:commercial && npm run test:design-hash && npm run test:release-gates"
+    "test:all": "npm run test:workflow && npm run test:energy && npm run test:ui && npm run test:startup && npm run test:crashfix && npm run test:delivery && npm run test:input && npm run test:readiness && npm run test:night && npm run test:navigation && npm run test:coherence && npm run test:borehole && npm run test:borehole-ui && npm run test:market && npm run test:proposal && npm run test:reports && npm run test:evidence && npm run test:studio && npm run test:templates && npm run test:proposal-studio && npm run test:assets && npm run test:explainers && npm run test:bank && npm run test:security && npm run test:pilot && npm run test:data-integrity && npm run test:uat && npm run test:trust && npm run test:commercial && npm run test:design-hash && npm run test:release-gates && npm run test:workspace-ux && npm run test:catalyst-gate-unit && npm run test:save-recovery && npm run test:sizing-audit && npm run test:motion-audit && npm run test:equipment && npm run test:startup-performance && npm run test:proposal-actions"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.5",

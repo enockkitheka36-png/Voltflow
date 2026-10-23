@@ -5,6 +5,67 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>☀️</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Voltflow — Solar Project Delivery, Sizing, Simulation, Installation & MRV Platform</title>
+    <script>
+      /*
+       * Zoho Catalyst auth gate (robust).
+       * Enforced only on the hosted Catalyst domain (*.catalystserverless.com);
+       * on localhost / preview it is a no-op, so local dev runs without Zoho login.
+       * The login page is served at /app/index.html; this app page is /app/app.html.
+       * The auth check is retried; after repeated failures it stops looping and
+       * shows a diagnostic instead of bouncing forever.
+       */
+      (function () {
+        if (!/catalystserverless\.com$/.test(location.hostname)) return;
+        var gate = document.createElement('style');
+        gate.textContent = '#root{visibility:hidden}';
+        document.head.appendChild(gate);
+        function reveal() {
+          try { sessionStorage.removeItem('vfBounce'); } catch (e) {}
+          if (gate && gate.parentNode) gate.parentNode.removeChild(gate);
+        }
+        function bounceCount() {
+          try { return Number(sessionStorage.getItem('vfBounce') || 0); } catch (e) { return 0; }
+        }
+        function fail(detail) {
+          var n = bounceCount() + 1;
+          try { sessionStorage.setItem('vfBounce', String(n)); } catch (e) {}
+          if (n <= 2) { location.replace('/app/index.html'); return; }
+          document.title = 'VF-AUTHDIAG ' + n + ': ' + (detail || 'auth not confirmed');
+          try {
+            var d = document.createElement('pre');
+            d.style.cssText = 'position:fixed;inset:0;margin:0;padding:20px;background:#0b1220;color:#e5e7eb;font:13px/1.5 monospace;white-space:pre-wrap;z-index:99999';
+            d.textContent = 'Voltflow sign-in could not be confirmed after several tries.\n\nDiagnostic: ' + (detail || '') + '\n\n(Temporary debug screen.)';
+            document.documentElement.appendChild(d);
+          } catch (e) {}
+        }
+        function check() {
+          var tries = 0;
+          (function attempt() {
+            tries += 1;
+            try {
+              window.catalyst.auth.isUserAuthenticated()
+                .then(function () { reveal(); })
+                .catch(function (e) {
+                  if (tries < 3) return setTimeout(attempt, 700);
+                  fail('reject:' + (e && (e.message || e.code || JSON.stringify(e))));
+                });
+            } catch (e) {
+              if (tries < 3) return setTimeout(attempt, 700);
+              fail('throw:' + (e && e.message));
+            }
+          })();
+        }
+        function load(src, cb) {
+          var s = document.createElement('script');
+          s.src = src; s.onload = cb;
+          s.onerror = function () { fail('sdkload:' + src); };
+          document.head.appendChild(s);
+        }
+        load('https://static.zohocdn.com/catalyst/sdk/js/4.6.2/catalystWebSDK.js', function () {
+          load('/__catalyst/sdk/init.js', check);
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

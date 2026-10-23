@@ -12,6 +12,7 @@ import { buildProjectReadiness } from "../src/utils/readinessEngine.js";
 import { computeBorehole, buildBoreholeBoQ, normalizeBorehole, createDefaultBorehole } from "../src/utils/boreholeEngine.js";
 import { VALID_TABS, TECHNICIAN_SAFE_TABS, isTabAllowedInView } from "../src/utils/navigation.js";
 import { APP_VERSION } from "../src/utils/schemaMigration.js";
+import { getWorkspaceNavigation } from "../src/utils/workspaceNavigation.js";
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -32,7 +33,10 @@ console.log(`\n${APP_VERSION} — Borehole UI / Integration Regression\n`);
 test("1. Solar Borehole tab component + route + nav entry exist", () => {
   assert.ok(/function SolarBorehole/.test(app), "SolarBorehole component");
   assert.ok(/active === "borehole"/.test(app), "borehole route");
-  assert.ok(/btn\("borehole"/.test(app), "borehole nav entry");
+  assert.ok(/<WorkspaceNavigation groups=\{groups\}/.test(app), "shared menu renderer is wired");
+  for (const viewMode of ["engineer", "technician"]) {
+    assert.ok(getWorkspaceNavigation({ viewMode }).some((group) => group.items.some((item) => item.key === "borehole")), "borehole nav entry");
+  }
 });
 
 test("2. Borehole result memo is wired (computeBorehole)", () => {

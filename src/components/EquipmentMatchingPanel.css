@@ -1,0 +1,23 @@
+.equipment-match { padding: clamp(1rem, 2vw, 1.75rem); min-width: 0; }
+.equipment-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: .75rem; }
+.equipment-heading h2 { margin: .2rem 0 .75rem; }
+.equipment-eyebrow { font-size: .75rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin: 0; }
+.equipment-match p, .equipment-match li { line-height: 1.6; }
+.equipment-match fieldset { border: 1px solid var(--border-color, #cbd5e1); border-radius: 12px; margin: 1.25rem 0; padding: 1rem; min-width: 0; }
+.equipment-match legend { padding: 0 .35rem; font-weight: 700; }
+.equipment-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; }
+.equipment-field { display: flex; flex-direction: column; gap: .4rem; min-width: 0; font-size: .85rem; font-weight: 600; }
+.equipment-field input, .equipment-field select { width: 100%; min-height: 44px; min-width: 0; padding: .65rem; border: 1px solid var(--border-color, #94a3b8); border-radius: 8px; background: var(--bg-card, white); color: var(--text-primary, #172334); box-sizing: border-box; }
+.equipment-field small, .equipment-exit-note { font-size: .75rem; font-weight: 400; line-height: 1.5; color: var(--text-muted); }
+.equipment-field :is(input, select):focus-visible, .equipment-match :is(summary, a, button):focus-visible { outline: 3px solid #0891b2; outline-offset: 3px; }
+.equipment-notice, .equipment-result { border-left: 3px solid #0891b2; background: var(--bg-secondary, #f1f5f9); padding: 1rem; border-radius: 6px; }
+.equipment-status { border-radius: 999px; padding: .4rem .75rem; font-weight: 700; font-size: .8rem; color: #334155; background: #e2e8f0; }
+.equipment-status-verified { color: #14532d; background: #dcfce7; }
+.equipment-status-incompatible { color: #991b1b; background: #fee2e2; }
+.equipment-status-conditional { color: #713f12; background: #fef3c7; }
+.equipment-result { margin: 1rem 0; }
+.equipment-match li { margin-bottom: .65rem; overflow-wrap: anywhere; }
+.equipment-match summary { cursor: pointer; padding: .6rem 0; font-weight: 600; }
+.equipment-sources { margin-top: 1.25rem; }
+.equipment-exit-note { display: block; margin-top: .5rem; }
+@media (prefers-reduced-motion: reduce) { .equipment-match * { scroll-behavior: auto; transition: none; animation: none; } }

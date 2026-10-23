@@ -1,3 +1,5 @@
+import { getDocumentedAsset } from "./equipmentCatalogue.js";
+
 export const DEFAULT_TAX_POLICY = Object.freeze({
   version: "KE-2026-01",
   codes: Object.freeze({ VAT_STANDARD: 16, VAT_ZERO: 0, VAT_EXEMPT: null }),
@@ -87,16 +89,20 @@ export function calculateQuote(lines = [], pricingPolicy = {}, taxPolicy = DEFAU
 }
 
 export function projectQuoteLines(project = {}, sizing = {}) {
+  const selection = project.equipmentSelection?.enabled ? project.equipmentSelection : null;
+  const panel = selection && getDocumentedAsset(selection.panelId, "panels");
+  const inverter = selection && getDocumentedAsset(selection.inverterId, "inverters");
+  const battery = selection && getDocumentedAsset(selection.batteryId, "batteries");
   const epc = Math.max(0, Number(project.epcCost) || 0);
   const labour = roundMoney(epc * 0.65);
   const transport = roundMoney(epc * 0.2);
   const otherEpc = roundMoney(epc - labour - transport);
   const standard = "VAT_STANDARD";
   const lines = [
-    { sku: "PV-MODULES", description: "PV modules", category: "EQUIPMENT", qty: Math.max(1, Number(sizing.panels) || 1), unit_price: Number(project.panelCost) || 0, discount_pct: 0, tax_code: standard },
+    { sku: "PV-MODULES", description: panel ? `${panel.brand} ${panel.model}` : "PV modules", category: "EQUIPMENT", qty: Math.max(1, Number(sizing.panels) || 1), unit_price: Number(project.panelCost) || 0, discount_pct: 0, tax_code: standard },
     { sku: "PV-MOUNTING", description: "Mounting hardware", category: "EQUIPMENT", qty: Math.max(1, Number(sizing.panels) || 1), unit_price: Number(project.mountingPerPanel) || 0, discount_pct: 0, tax_code: standard },
-    { sku: "INVERTER", description: "Inverter", category: "EQUIPMENT", qty: 1, unit_price: Number(sizing.inverterCost ?? project.inverterUnitCost) || 0, discount_pct: 0, tax_code: standard },
-    { sku: "BATTERY-BANK", description: "Battery bank and interconnects", category: "EQUIPMENT", qty: 1, unit_price: Number(sizing.batteryCost) || 0, discount_pct: 0, tax_code: standard },
+    { sku: "INVERTER", description: inverter ? `${inverter.brand} ${inverter.model}` : "Inverter", category: "EQUIPMENT", qty: 1, unit_price: Number(sizing.inverterCost ?? project.inverterUnitCost) || 0, discount_pct: 0, tax_code: standard },
+    { sku: "BATTERY-BANK", description: battery ? `${selection.batteryQuantity} × ${battery.brand} ${battery.model} + interconnect allowance` : "Battery bank and interconnects", category: "EQUIPMENT", qty: 1, unit_price: Number(sizing.batteryCost) || 0, discount_pct: 0, tax_code: standard },
     { sku: "BOS", description: "Cabling and electrical protection", category: "EQUIPMENT", qty: 1, unit_price: Number(project.cablingProtectionCost) || 0, discount_pct: 0, tax_code: standard },
     { sku: "MONITORING", description: "Monitoring", category: "EQUIPMENT", qty: 1, unit_price: Number(project.monitoringCost) || 0, discount_pct: 0, tax_code: standard },
     { sku: "LABOUR", description: "Installation labour", category: "LABOUR", qty: 1, unit_price: labour, discount_pct: 0, tax_code: standard },

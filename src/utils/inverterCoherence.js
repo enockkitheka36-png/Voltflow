@@ -66,6 +66,8 @@ export function computeInverterSizing({
   } else {
     selectedInverterKw = nextStandardInverter(engineeringMinInvKw);
   }
+  loadSupported = selectedInverterKw >= loadBasedInvKw - 0.001;
+  const catalogueExceeded = (useBasis === "backup_peak_led" ? loadBasedInvKw : useBasis === "pv_ratio_led" ? pvBasedInvKw : useBasis === "manual_review" ? pos(manualInverterKw, engineeringMinInvKw) : engineeringMinInvKw) > STANDARD_INVERTERS[STANDARD_INVERTERS.length - 1];
 
   // Which physical driver set the engineering minimum?
   const span = Math.max(loadBasedInvKw, pvBasedInvKw, 0.001);
@@ -90,7 +92,7 @@ export function computeInverterSizing({
     selectedInverterKw, selectedReason,
     isLoadLed, isPvLed, isBalanced,
     inverterHeadroom: peakKw > 0 ? r2(selectedInverterKw / peakKw) : 0,
-    basis: useBasis, loadSupported, requiresNote,
+    basis: useBasis, loadSupported, requiresNote, catalogueExceeded,
     runningDiversity: pos(runningDiversity, DEFAULT_RUNNING_DIVERSITY),
     surgeDiversity: pos(surgeDiversity, DEFAULT_SURGE_DIVERSITY),
   };

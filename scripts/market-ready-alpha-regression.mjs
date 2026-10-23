@@ -20,6 +20,7 @@ function test(name, fn) {
   catch (e) { console.error("  FAIL: " + name); console.error("    " + e.message); failed++; }
 }
 const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const home = readFileSync(new URL("../src/components/workspace/WorkspaceHome.jsx", import.meta.url), "utf8");
 const uicss = readFileSync(new URL("../src/components/ui.css", import.meta.url), "utf8");
 const noBad = (o) => JSON.stringify(o, (k, v) => (typeof v === "number" && !Number.isFinite(v) ? "__BAD__" : v)).indexOf("__BAD__") === -1;
 
@@ -33,7 +34,9 @@ test("0. Version ≥ 11.6 and schema persists borehole (version-agnostic)", () =
 });
 
 test("1. Clean startup renders the product intro (no auto-loaded demo)", () => {
-  assert.ok(/Welcome to Voltflow/.test(app), "start screen intro present");
+  assert.ok(/<WorkspaceHome/.test(app), "start screen uses the product home");
+  assert.ok(/YOUR SOLAR PROJECT WORKSPACE/.test(home), "start screen intro present");
+  assert.ok(/onNewProject/.test(home) && /onDemo/.test(home), "guided setup and labelled demos remain available");
   assert.ok(/const defaultLoads = \[\]/.test(app), "startup loads empty");
 });
 
