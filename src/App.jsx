@@ -2,6 +2,8 @@ import React, { useMemo, useState, useEffect, useRef, useCallback } from "react"
 import "./App.css";
 import { BrandLogo } from "./components/BrandLogo.jsx";
 import EquipmentMatchingPanel from "./components/EquipmentMatchingPanel.jsx";
+import ElectricityTariffPanel from "./components/ElectricityTariffPanel.jsx";
+import { normalizeTariffState, evaluateProjectTariff, gateTariffSizing, tariffToday } from "./utils/electricityTariff.js";
 import { normalizeEquipmentSelection, resolveEquipmentProject, equipmentPanelCount, equipmentBatteryCount, equipmentBankLimits, gateEquipmentSizing } from "./utils/equipmentMatching.js";
 import { WorkspaceHome } from "./components/workspace/WorkspaceHome.jsx";
 import { WorkspaceNavigation } from "./components/workspace/WorkspaceNavigation.jsx";
@@ -431,6 +433,7 @@ const defaultProject = {
   contingency: 0.05,
   vat: 0.16,
   gridTariff: 22,
+  electricityTariff: null,
   tariffEscalation: 0.08,
   discountRate: 0.12,
   projectLife: 25,
@@ -708,6 +711,7 @@ function normalizeLoadedRecord(raw) {
   mergedProject.blueprint  = normalizeBlueprintAssumptions(mergedProject.blueprint);
   mergedProject.quoteStage = normalizeQuoteStage(mergedProject.quoteStage);
   mergedProject.energyImport = normalizeEnergyImport(mergedProject.energyImport);
+  mergedProject.electricityTariff = normalizeTariffState(mergedProject.electricityTariff);
   mergedProject.viewMode = normalizeViewMode(mergedProject.viewMode);
   // v11.5 — Voltflow Delivery. Old projects have no delivery object; they get a
   // default one (stage "lead") so every delivery screen renders safely.
@@ -1149,7 +1153,8 @@ function useSizing(projectInput, loads) {
 
     const uncappedAnnualSavings = Math.min(annualEnergy * project.selfConsumptionRate, designDailyKwh * 365) * project.gridTariff;
     const annualBillLimit = project.monthlyBill * 12 * project.solarCoverage;
-    const annualSavings = project.capSavingsToBill ? Math.min(uncappedAnnualSavings, annualBillLimit) : uncappedAnnualSavings;
+    const tariffModel = evaluateProjectTariff(project, { annualEnergy, annualLoadKwh: designDailyKwh * 365 });
+    const annualSavings = tariffModel.enabled ? tariffModel.annualSavings : project.capSavingsToBill ? Math.min(uncappedAnnualSavings, annualBillLimit) : uncappedAnnualSavings;
     const annualSavingsP90 = annualSavings * project.p90Factor;
     const monthlySavings = annualSavings / 12;
     const carbonStandardData = carbonStandards[project.carbonStandard] || carbonStandards.VCS;
@@ -1615,8 +1620,8 @@ function useSizing(projectInput, loads) {
       sizingResult.quoteReady = false;
       sizingResult.quoteBlockedReason = "Inverter engineering review required";
     }
-    return gateEquipmentSizing(project, loadInventoryBlocked ? applyLoadInventoryGate(sizingResult, quoteBlockedReason) : sizingResult);
-  }, [projectInput, loads]);
+    return gateTariffSizing(gateEquipmentSizing(project, loadInventoryBlocked ? applyLoadInventoryGate(sizingResult, quoteBlockedReason) : sizingResult), tariffModel);
+  }, [projectInput, loads, tariffToday()]);
 }
 
 /* UI Helper Components in Vanilla CSS */
@@ -3660,16 +3665,18 @@ function Finance({ project, setProject, sizing }) {
   const update = (k, v) => setProject((p) => ({ ...p, [k]: v }));
   const carbonRevenueY1 = project.carbonInCashflow ? sizing.carbonValue : 0;
   const quote = sizing.quote || { category_totals: {}, discount: 0, subtotal_net: 0, tax: 0, total_gross: 0 };
+  const tariffHeld = sizing.tariffModel?.enabled && !sizing.tariffModel.ready;
   return (
-    <div className="grid-cols-2">
-      <Card title="Financial summary" subtitle="Savings now use annual kWh × tariff × self-consumption, not monthly bill × coverage.">
+    <div className="grid-cols-2 finance-workspace">
+      <ElectricityTariffPanel project={project} setProject={setProject} sizing={sizing} />
+      <Card title="Financial summary" subtitle={project.electricityTariff?.enabled ? "Savings use the reviewed bill before solar minus retained grid costs after solar. Future years remain forecasts." : "Savings now use annual kWh × tariff × self-consumption, not monthly bill × coverage."}>
         <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
           <Metric label="Total System Cost" value={money(sizing.totalCost)} />
-          <Metric label="P50 Annual Savings" value={money(sizing.annualSavings)} />
-          <Metric label="P90 Annual Savings" value={money(sizing.annualSavingsP90)} />
+          <Metric label="P50 Annual Savings" value={tariffHeld ? "Review tariff" : money(sizing.annualSavings)} />
+          <Metric label="P90 Annual Savings" value={tariffHeld ? "Review tariff" : money(sizing.annualSavingsP90)} />
           <Metric label="Carbon Revenue Y1" value={money(carbonRevenueY1)} hint={project.carbonInCashflow ? `${num(sizing.carbonOffset, 2)} tCO₂/year` : "Excluded unless explicitly enabled"} />
-          <Metric label="P50 Payback" value={`${num(sizing.payback, 2)} yrs`} />
-          <Metric label="P90 Payback" value={`${num(sizing.paybackP90, 2)} yrs`} />
+          <Metric label="P50 Payback" value={tariffHeld ? "Review tariff" : Number.isFinite(sizing.payback) ? `${num(sizing.payback, 2)} yrs` : "Not reached"} />
+          <Metric label="P90 Payback" value={tariffHeld ? "Review tariff" : Number.isFinite(sizing.paybackP90) ? `${num(sizing.paybackP90, 2)} yrs` : "Not reached"} />
           <Metric label="Project IRR" value={Number.isFinite(sizing.irrLife) ? pct(sizing.irrLife) : "Not available"} />
           <Metric label="Equity IRR" value={project.debtShare > 0 ? Number.isFinite(sizing.equityIrr) ? pct(sizing.equityIrr) : "Not available" : "Equity-only case"} />
           <Metric label="LCOE P50/P90" value={`${num(sizing.lcoe, 2)} / ${num(sizing.lcoeP90, 2)}`} hint="KES/kWh - canonical feasibility basis" />
@@ -3679,7 +3686,7 @@ function Finance({ project, setProject, sizing }) {
       </Card>
       <Card title="Bankability / DSCR model" subtitle="P90 net benefit is used for debt service cover.">
         <div className="form-grid">
-          <Field label="Grid Tariff" type="number" value={project.gridTariff} onChange={(v) => update("gridTariff", Math.max(v, 0))} suffix="KES/kWh" />
+          <Field label="Grid Tariff" type="number" value={project.gridTariff} onChange={(v) => update("gridTariff", Math.max(v, 0))} suffix="KES/kWh" disabled={project.electricityTariff?.enabled} help={project.electricityTariff?.enabled ? "Flat rate is inactive while the reviewed tariff is applied." : "Flat-rate planning estimate; use the reviewed bill calculator above for itemised charges."} />
           <Field label="Tariff Escalation" type="number" value={project.tariffEscalation} onChange={(v) => update("tariffEscalation", clamp(v, 0, 0.3))} suffix="0-1" />
           <Field label="Self Consumption" type="number" value={project.selfConsumptionRate} onChange={(v) => update("selfConsumptionRate", clamp(v, 0, 1))} suffix="0-1" />
           <Field label="P90 Factor" type="number" value={project.p90Factor} onChange={(v) => update("p90Factor", clamp(v, 0.75, 1))} suffix="0-1" />
@@ -3690,7 +3697,7 @@ function Finance({ project, setProject, sizing }) {
           <Field label="Degradation" type="number" value={project.degradation} onChange={(v) => update("degradation", clamp(v, 0, 0.03))} suffix="0-1" />
           <Field label="Carbon Price Escalation" type="number" value={project.carbonEscalation} onChange={(v) => update("carbonEscalation", clamp(v, 0, 0.3))} suffix="0-1" />
           <Field label="Inflation Rate" type="number" value={project.inflationRate} onChange={(v) => update("inflationRate", clamp(v, 0, 0.3))} suffix="0-1" />
-          <CheckField label="Cap savings to current bill" checked={project.capSavingsToBill} onChange={(v) => update("capSavingsToBill", v)} help="Keep enabled for normal client proposals. Disable only for export/feed-in or special tariff models." />
+          {project.electricityTariff?.enabled ? <p className="tariff-help">Reviewed tariff mode always caps avoided imports to generation, captured loads and recorded bill kWh. The legacy flat-rate bill cap is inactive; export credits are not modelled.</p> : <CheckField label="Cap savings to current bill" checked={project.capSavingsToBill} onChange={(v) => update("capSavingsToBill", v)} help="Keep enabled for normal client proposals. Disable only for export/feed-in or special tariff models." />}
         </div>
         <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", marginTop: "1.5rem" }}>
           <Metric label="Debt Principal" value={money(sizing.debtPrincipal)} />
@@ -4208,7 +4215,7 @@ function Proposal({ project, setProject, sizing, loadItemsV2, showToast, survey,
   const canShowCommercialProposal = !isTechnicianView;
   const loadQuoteBlocked = sizing.quoteReady === false || !!sizing.loadInventoryBlocked || !!sizing.loadInventoryPending || !!sizing.loadInventoryInvalid;
   const proposalBlockedLabel = sizing.quoteBlockedReason || LOAD_PENDING_LABEL;
-  const proposalBlockedHint = sizing.equipment?.enabled && !sizing.equipment.quoteReady ? "Resolve equipment matching in Asset library before exporting a commercial proposal." : "Add committed loads and click Update Sizing before pricing.";
+  const proposalBlockedHint = sizing.equipment?.enabled && !sizing.equipment.quoteReady ? "Resolve equipment matching in Asset library before exporting a commercial proposal." : sizing.tariffModel?.enabled && !sizing.tariffModel.ready ? "Review and apply the bill and tariff inputs in Financials + DSCR before exporting." : "Add committed loads and click Update Sizing before pricing.";
   const visibleReportModes = isEngineerView ? REPORT_MODES : isTechnicianView ? ["technician"] : ["client"];
   const billLoadMessage = billLoadClientMessage(billLoadReconciliation);
   const quote = sizing.quote || { category_totals: {}, discount: 0, subtotal_net: 0, tax: 0, total_gross: 0 };
@@ -4445,7 +4452,7 @@ Subject to final site survey, equipment availability, and engineering approval.`
             <Metric
               label="Captured load coverage"
               value={Number.isFinite(billLoadReconciliation.capturedLoadCoveragePct) ? pct(billLoadReconciliation.capturedLoadCoveragePct) : "Pending reconciliation"}
-              hint="Itemized kWh divided by bill-implied kWh"
+              hint={billLoadReconciliation?.energyBasis === "recorded_bill_kwh" ? "Itemized kWh divided by recorded bill kWh" : "Itemized kWh divided by bill-implied kWh"}
             />
             <Metric
               label="Savings vs referenced bill"
@@ -4459,6 +4466,9 @@ Subject to final site survey, equipment availability, and engineering approval.`
             This proposal is on hold. {proposalBlockedHint}
           </WarningPanel>
         )}
+        {canShowCommercialProposal && sizing.tariffSummary && <WarningPanel tone="info" title="Reviewed tariff savings forecast">
+          {sizing.tariffSummary.category} · {sizing.tariffSummary.billingMonth} · reference bill {money(sizing.tariffSummary.beforeKes)}, after-solar estimate {money(sizing.tariffSummary.afterKes)}. Fixed and demand charges are retained. {sizing.tariffSummary.assumption} Recorded review only, not utility certification.
+        </WarningPanel>}
         <div className="grid-cols-4" style={{ marginTop: "2rem" }}>
           <Metric label="PV SIZE" value={loadQuoteBlocked ? proposalBlockedLabel : `${num(sizing.actualKwp, 1)} kWp`} hint={loadQuoteBlocked ? proposalBlockedHint : `${sizing.panels} panels`} />
           <Metric label="BATTERY CAPACITY" value={loadQuoteBlocked ? proposalBlockedLabel : `${num(sizing.batteryKwh, 1)} kWh`} hint={loadQuoteBlocked ? proposalBlockedHint : batteryChemistries[project.batteryChemistry].label} />
@@ -10564,7 +10574,9 @@ export default function SolariseProSizingApp() {
     monthlySavingsKes: sizing.monthlySavings,
     nonEnergyChargesKes: project.nonEnergyChargesKes || 0,
     nonEnergyChargesKnown: project.nonEnergyChargesKnown === true,
-  }), [project.monthlyBill, project.gridTariff, project.nonEnergyChargesKes, project.nonEnergyChargesKnown, sizing.dailyKwh, sizing.monthlySavings]);
+    measuredMonthlyKwh: sizing.tariffModel?.ready ? sizing.tariffModel.referenceKwh : null,
+    billingDays: sizing.tariffModel?.ready ? sizing.tariffModel.billingDays : 30,
+  }), [project.monthlyBill, project.gridTariff, project.nonEnergyChargesKes, project.nonEnergyChargesKnown, sizing.dailyKwh, sizing.monthlySavings, sizing.tariffModel]);
   const loadSummary = useMemo(
     () => summarizeLoads(loadItemsV2, loadAssessmentMode, project),
     [loadItemsV2, loadAssessmentMode, project]

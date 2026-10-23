@@ -10,6 +10,7 @@
 // backward compatible with callers that predate the simulation studio.
 export function calculateReadiness(project, loads, survey, sizing, layoutInfo) {
   const blockers = [];
+  if (sizing?.tariffModel?.enabled && !sizing.tariffModel.ready) blockers.push("Applied electricity tariff requires review. Resolve the bill and tariff checks in Financials + DSCR before quoting.");
   if (sizing?.equipment?.enabled && !sizing.equipment.quoteReady) blockers.push(`Equipment matching ${sizing.equipment.status.toLowerCase()}. Resolve the Asset library checks before quoting.`);
   const warnings = [];
   const recommendations = [];
@@ -174,6 +175,10 @@ export function calculateReadiness(project, loads, survey, sizing, layoutInfo) {
   } else if (blockers.length > 0) {
     // Any unresolved blocker (earthing, incomplete survey, BMS, etc.) prevents "Ready to propose"
     readyStatus = "Engineering review required";
+  } else if (sizing?.tariffModel?.enabled && !sizing.tariffModel.ready) {
+    status = "Tariff review required";
+    approvals.push({ role: "Commercial Reviewer", reason: "Applied electricity-cost model is incomplete or stale" });
+    nextAction.push("Review and apply the bill and tariff inputs in Financials + DSCR");
   } else if (totalScore < 40) {
     readyStatus = "Incomplete survey";
   } else if (engScore < 15 || !sizing.coldVocOk) {

@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import { BLUEPRINT_TEMPLATES } from './loadEngine.js';
 import { getCableEstimates } from './installerSimulation.js';
+import { assertTariffForExport } from './electricityTariff.js';
 
 // Helper to format currency
 const nf = new Intl.NumberFormat("en-KE", { maximumFractionDigits: 0 });
@@ -13,6 +14,7 @@ const pct = (v) => Number.isFinite(Number(v || 0)) ? `${(Number(v || 0) * 100).t
  * Callers can append pages then call doc.save() themselves.
  */
 export function buildQuotationPDF(project, sizing, loads) {
+  assertTariffForExport(project, sizing);
   if (project.equipmentSelection?.enabled && (!sizing.equipment?.quoteReady || sizing.quoteReady === false)) throw new Error("Resolve equipment matching and sizing checks before generating a quotation.");
   // Create a standard A4 portrait PDF (210mm x 297mm)
   const doc = new jsPDF({
@@ -74,6 +76,10 @@ export function buildQuotationPDF(project, sizing, loads) {
     [['Client Name', project.client], ['Location', project.location], ['Prepared By', project.preparedBy]],
     [['System Type', project.systemType], ['Connection Phase', project.phase], ['Design Stage', project.designStage || 'Feasibility']],
   ];
+  if (sizing.tariffSummary) {
+    metadataColumns[0].push(['Tariff month', sizing.tariffSummary.billingMonth]);
+    metadataColumns[1].push(['Tariff version', sizing.tariffSummary.version.slice(-12)]);
+  }
   const metadataColumnWidth = (contentWidth - 16) / 2;
   const metadataValueOffset = 33;
   doc.setFont('Helvetica', 'bold');
@@ -394,7 +400,8 @@ export function buildQuotationPDF(project, sizing, loads) {
   doc.setFontSize(7.5);
   doc.setTextColor(148, 163, 184);
   const disclaimerText = 'Disclaimer: This document is a feasibility-level system sizing and financial estimate. Final cable ampacity, protection coordination, earthing/bonding, SPD selection, KPLC/EPRA interconnection approval, and commissioning tests must be verified by qualified personnel before installation. Produced by Solarise Insight Limited.';
-  const disclaimerLines = doc.splitTextToSize(disclaimerText, contentWidth);
+  const tariffDisclaimer = sizing.tariffSummary ? ` Savings use the reviewed ${sizing.tariffSummary.billingMonth} reference tariff, with fixed and demand charges retained. Annual figures repeat a representative month and remain forecasts, not guaranteed savings.` : '';
+  const disclaimerLines = doc.splitTextToSize(disclaimerText + tariffDisclaimer, contentWidth);
   doc.setFont('Helvetica', 'normal');
   doc.setFontSize(8);
   const preparedByLines = doc.splitTextToSize(String(project.preparedBy || 'Solarise Lead Engineer'), 90);

@@ -61,6 +61,10 @@ export function buildProjectReadiness(
 
   const sections = {};
   const equipmentBlocked = !!sizing.equipment?.enabled && !sizing.equipment.quoteReady;
+  const tariffBlocked = !!sizing.tariffModel?.enabled && !sizing.tariffModel.ready;
+  if (sizing.tariffModel?.enabled) sections.electricityTariff = section("electricityTariff", "Electricity tariff review", "finance", "Review bill and tariff",
+    [{ label: "Reviewed tariff and reference bill current", ok: !tariffBlocked }], !tariffBlocked,
+    { critical: tariffBlocked, note: tariffBlocked ? sizing.tariffModel.errors[0] : sizing.tariffModel.summary.assumption });
   if (sizing.equipment?.enabled) sections.equipmentMatching = section("equipmentMatching", "Equipment matching", "assets-lib", "Review equipment matches",
     [{ label: "Documented equipment checks complete", ok: !equipmentBlocked }], !equipmentBlocked,
     { critical: equipmentBlocked, note: sizing.equipment.scope });
@@ -179,7 +183,7 @@ export function buildProjectReadiness(
     ], false, { highlightId: "boq-table", note: loadInventoryBlocked ? (sizing.quoteBlockedReason || "Pending load inventory") : null });
 
   // ── Proposal ─────────────────────────────────────────────────────────────────
-  const noCriticalYet = coldVocOk && bmsOk && dcAmpOk && acAmpOk && !phaseMismatch && !equipmentBlocked;
+  const noCriticalYet = coldVocOk && bmsOk && dcAmpOk && acAmpOk && !phaseMismatch && !equipmentBlocked && !tariffBlocked;
   sections.proposal = section("proposal", "Proposal", "proposal", "Open Proposal",
     [
       { label: "Client + system type set", ok: hasClient && !!systemType },
@@ -227,6 +231,7 @@ export function buildProjectReadiness(
   });
 
   const criticalIssues = [];
+  if (tariffBlocked) criticalIssues.push({ label: "Applied electricity tariff requires review", actionTab: "finance", highlightId: null });
   if (equipmentBlocked) criticalIssues.push({ label: `Equipment matching ${sizing.equipment.status.toLowerCase()}`, actionTab: "assets-lib", highlightId: "equipment-matching-title" });
   if (!loadInventoryBlocked && !coldVocOk) criticalIssues.push({ label: "Cold Voc exceeds inverter max DC voltage", actionTab: "inverter", highlightId: "cold-voc-card" });
   if (!loadInventoryBlocked && !bmsOk) criticalIssues.push({ label: "Inverter battery current exceeds BMS discharge limit", actionTab: "inverter", highlightId: "cold-voc-card" });
@@ -247,6 +252,7 @@ export function buildProjectReadiness(
   // a fresh feasibility project isn't dragged down by not-yet-started delivery).
   const coreKeys = ["clientDetails", "siteSurvey", "loadInventory", "pvSizing", "batterySizing", "inverterSafety", "engineeringCompliance", "boq", "proposal"];
   if (sizing.equipment?.enabled) coreKeys.push("equipmentMatching");
+  if (sizing.tariffModel?.enabled) coreKeys.push("electricityTariff");
   const overallScore = Math.round(coreKeys.reduce((s, k) => s + sections[k].score, 0) / coreKeys.length);
 
   const readyForEngineeringReview = !loadInventoryBlocked && validApplied.length > 0 && !hasUnappliedLoadChanges && (Number(sizing.totalCost) || 0) > 0;

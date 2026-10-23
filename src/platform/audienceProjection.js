@@ -1,4 +1,5 @@
 import { billLoadClientMessage } from "../utils/billLoadReconciliation.js";
+import { isOfficialTariffSource } from "../utils/electricityTariff.js";
 
 const pick = (source, keys) => keys.reduce((out, key) => {
   if (source && source[key] !== undefined) out[key] = source[key];
@@ -21,6 +22,15 @@ const SIZING_PUBLIC_FIELDS = [
   "annualEnergy", "annualEnergyP90", "autonomyHours", "totalCost",
   "annualSavings", "annualSavingsP90", "monthlySavings", "payback", "lcoe",
 ];
+
+function publicTariffSummary(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  return {
+    ...Object.fromEntries(["method", "version", "category", "billingMonth", "checkedOn", "status", "assumption"].filter((key) => typeof summary[key] === "string").map((key) => [key, summary[key]])),
+    ...Object.fromEntries(["beforeKes", "afterKes", "avoidedMonthlyKwh", "monthlySavings", "annualSavings"].filter((key) => typeof summary[key] === "number" && Number.isFinite(summary[key])).map((key) => [key, summary[key]])),
+    sources: Object.fromEntries(["tariff", "adjustments", "taxes"].filter((key) => isOfficialTariffSource(summary.sources?.[key])).map((key) => [key, summary.sources[key]])),
+  };
+}
 
 function safeDelivery(delivery = {}) {
   return {
@@ -64,7 +74,7 @@ function publicSnapshot(snapshot = {}, audience = "client") {
     audience,
     project: pick(project, PROJECT_PUBLIC_FIELDS),
     survey: publicSurvey(survey),
-    sizing: pick(snapshot.sizing || {}, SIZING_PUBLIC_FIELDS),
+    sizing: { ...pick(snapshot.sizing || {}, SIZING_PUBLIC_FIELDS), tariffSummary: publicTariffSummary(snapshot.sizing?.tariffSummary) },
     designRevision: pick(snapshot.designRevision || {}, ["revision_id", "inputs_hash", "calculation_version"]),
     quote: snapshot.quote ? pick(snapshot.quote, ["currency", "category_totals", "discount", "subtotal_net", "tax", "total_gross", "tax_breakdown", "tax_rule_version"]) : null,
     financials: pick(snapshot.financials || {}, ["totalInvestment", "annualSavings", "paybackYears", "lcoeKesPerKwh"]),

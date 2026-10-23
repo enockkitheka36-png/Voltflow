@@ -3,6 +3,7 @@ import { calculateQuote, projectQuoteLines } from "./quoteEngine.js";
 import { computeInverterSizing } from "./inverterCoherence.js";
 import { normalizeEquipmentSelection, resolveEquipmentProject, equipmentPanelCount, equipmentBatteryCount, gateEquipmentSizing } from "./equipmentMatching.js";
 import { EQUIPMENT_CATALOGUE_VERSION } from "./equipmentCatalogue.js";
+import { normalizeTariffState, evaluateProjectTariff, gateTariffSizing } from "./electricityTariff.js";
 
 export const DESIGN_CALCULATION_VERSION = "11.8.3";
 export const DEFAULT_INVERTER_STEPS_KW = [1, 2, 3, 3.6, 5, 6, 8, 10, 12, 15, 20, 30, 50, 100];
@@ -142,6 +143,7 @@ export function buildDesignInputs(input = {}) {
       quoteCurrency: project.quoteCurrency,
       pricingPolicyVersion: project.pricingPolicyVersion,
       taxRuleVersion: project.taxRuleVersion,
+      electricityTariff: normalizeTariffState(project.electricityTariff).enabled ? normalizeTariffState(project.electricityTariff).applied : null,
     },
     specialistInputs: {
       evChargerType: project.evChargerType,
@@ -251,19 +253,20 @@ export function computeOptionSizing(project = {}, loads = [], config = {}) {
   const investmentCost = totalCost + (isMG ? finite(project.mgCapexDistribution) : 0);
   const annualSavingsRaw = Math.min(annualEnergy * finite(project.selfConsumptionRate), dailyKwh * 365) * finite(project.gridTariff);
   const billLimit = finite(project.monthlyBill) * 12 * finite(project.solarCoverage);
-  const annualSavings = project.capSavingsToBill ? Math.min(annualSavingsRaw, billLimit) : annualSavingsRaw;
+  const tariffModel = evaluateProjectTariff(project, { annualEnergy, annualLoadKwh: dailyKwh * 365 });
+  const annualSavings = tariffModel.enabled ? tariffModel.annualSavings : project.capSavingsToBill ? Math.min(annualSavingsRaw, billLimit) : annualSavingsRaw;
   const annualOM = totalCost * finite(project.oAndMRate);
   const displacement = Math.min(0.85, finite(project.solarCoverage) * finite(project.gensetSolarDirectDisplacement, 0.65) + (usableKwh > 0 ? finite(project.gensetBatteryTimeShiftDisplacement, 0.15) : 0));
   const gensetSavings = project.systemType === "Genset hybrid" ? finite(project.gensetFuelLPerHour) * finite(project.gensetFuelCostKes) * finite(project.gensetRunHoursPerDay) * displacement * 365 + finite(project.gensetMaintenanceCostYr) * displacement * 0.5 : 0;
   const miniGridRevenue = (finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) * finite(project.mgResidentialTariff) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) * finite(project.mgCommercialTariff) + finite(project.mgAnchorLoad) * 12 * finite(project.mgAnchorTariff)) * 365;
   const annualNet = isEV ? dailyKwh * 365 * (finite(project.evTariffKes) - finite(project.gridTariff)) - annualOM : isMG ? miniGridRevenue - subscribers * finite(project.mgOpexPerSubscriberYr) - annualOM : annualSavings + gensetSavings - annualOM;
-  return gateEquipmentSizing(project, {
+  return gateTariffSizing(gateEquipmentSizing(project, {
     pr, panels, actualKwp, battKwh, battModules, invKw, totalCost, annualSavings, annualNet,
     payback: annualNet > 0 ? investmentCost / annualNet : Infinity, autonomyH, dailyKwh, investmentCost,
     requiredKwp, backupEnergyNeed: backupNeed, evBatteryBufferKwh: evBufferKwh, peakKw: inverterSizing.peakKw, loadBasedInvKw: inverterSizing.loadBasedInvKw,
     loadInventoryPending: false, loadInventoryInvalid: false, loadInventoryBlocked: false,
     quoteReady: inverterSizing.loadSupported && !inverterSizing.catalogueExceeded, quoteBlockedReason: !inverterSizing.loadSupported || inverterSizing.catalogueExceeded ? "Inverter engineering review required" : null, warnings: !inverterSizing.loadSupported || inverterSizing.catalogueExceeded ? ["Selected inverter exceeds supported sizing limits."] : [],
-  });
+  }), tariffModel);
 }
 
 export function deriveSystemOptions(input = {}) {

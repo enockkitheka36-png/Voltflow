@@ -132,6 +132,7 @@ export function generateClientExplanation(project, sizing, readiness, billLoadRe
     const equipmentBlocked = sizing.equipment?.enabled && !sizing.equipment.quoteReady;
     const nextStep = equipmentBlocked
       ? "Resolve equipment matching in Asset library, including exact hardware, quantities, evidence and prices."
+      : sizing.tariffModel?.enabled && !sizing.tariffModel.ready ? "Review and apply the electricity bill and tariff inputs in Financials + DSCR."
       : "Resolve the outstanding sizing checks before preparing a commercial proposal.";
     return {
       whatWeFound: `${sizing.quoteBlockedReason || "Design checks incomplete"}. This proposal is on hold.`,
@@ -188,7 +189,7 @@ export function generateClientExplanation(project, sizing, readiness, billLoadRe
 
   const assumptions =
     `This estimate is based on your monthly bill of KES ${bill}, a self-consumption rate of ${Math.round((project.selfConsumptionRate ?? 0.9) * 100)}%, ` +
-    `and a current grid tariff of KES ${tariff}/kWh. ` +
+    (sizing.tariffSummary ? `and the manually reviewed ${sizing.tariffSummary.billingMonth} electricity tariff. Fixed and demand charges remain. ${sizing.tariffSummary.assumption} ` : `and a current grid tariff of KES ${tariff}/kWh. `) +
     `Final savings depend on your actual usage patterns. We recommend 30 days of monitoring after installation to confirm performance.`;
 
   const nextSteps =

@@ -15,6 +15,8 @@
  * Nothing here claims certified engineering approval. Feasibility / market-testing.
  */
 
+import { assertTariffForExport } from "./electricityTariff.js";
+
 export const REPORT_MODES = ["client", "engineer", "technician", "lender"];
 export const REPORT_LABELS = {
   client: "Client Proposal",
@@ -49,7 +51,7 @@ function assumptionsSection(project, sizing) {
   return {
     heading: "Assumptions", type: "list", items: [
       `Peak Sun Hours: ${n(project.psh, 2)} h/day; Performance Ratio: ${pct(sizing.pr)}.`,
-      `Solar coverage target: ${pct(project.solarCoverage)}; tariff: ${kes(project.gridTariff)}/kWh.`,
+      sizing.tariffSummary ? `Reviewed Kenya tariff: ${sizing.tariffSummary.category}, ${sizing.tariffSummary.billingMonth}; version ${sizing.tariffSummary.version.slice(-12)}. Savings compare bills before and after solar, retaining fixed and demand charges. ${sizing.tariffSummary.assumption}` : `Solar coverage target: ${pct(project.solarCoverage)}; tariff: ${kes(project.gridTariff)}/kWh.`,
       `Load diversity — running ${project.runningLoadDiversityFactor ?? 0.75}, surge ${project.surgeDiversityFactor ?? 0.65}; final simultaneity to be confirmed.`,
       `Backup/night estimates use an 11-hour night window; actual runtime depends on real load behaviour.`,
       "Figures are planning-level and must be confirmed against site survey, equipment quotes and qualified review.",
@@ -238,12 +240,26 @@ export function buildReport(mode, ctx = {}) {
   const m = REPORT_MODES.includes(mode) ? mode : "client";
   const { project = {}, sizing = {}, readiness = {}, borehole: boreholeInput = null, boreholeChecklist = null, evidence = null } = ctx;
   const borehole = project.borehole?.enabled === false ? null : boreholeInput;
+  if (["client", "lender"].includes(m)) assertTariffForExport(project, sizing);
   if (["client", "lender"].includes(m) && project.equipmentSelection?.enabled && (!sizing.equipment?.quoteReady || sizing.quoteReady === false)) throw new Error("Resolve equipment matching and sizing checks before generating a commercial report.");
   let sections;
   if (m === "engineer") sections = buildEngineer(project, sizing, readiness, borehole);
   else if (m === "technician") sections = buildTechnician(project, sizing, readiness, borehole, boreholeChecklist);
   else if (m === "lender") sections = buildLender(project, sizing, readiness, borehole, evidence);
   else sections = buildClient(project, sizing, readiness, borehole);
+  if (sizing.tariffModel?.enabled && !sizing.tariffModel.ready && m === "engineer") sections.unshift({
+    heading: "Electricity-cost model on hold", type: "list",
+    items: ["Commercial savings are withheld until the applied tariff is reviewed.", ...sizing.tariffModel.errors],
+  });
+  if (sizing.tariffSummary && m !== "technician") sections.push({
+    heading: "Reviewed electricity-cost basis", type: "kv", items: [
+      ["Reference month / category", `${sizing.tariffSummary.billingMonth} / ${sizing.tariffSummary.category}`],
+      ["Tariff version", sizing.tariffSummary.version],
+      ["Reference bill / after solar", `${kes(sizing.tariffSummary.beforeKes)} / ${kes(sizing.tariffSummary.afterKes)}`],
+      ["Source check date", sizing.tariffSummary.checkedOn],
+      ["Scope", sizing.tariffSummary.assumption],
+    ],
+  });
   if (sizing.equipment?.enabled) sections.splice(1, 0, {
     heading: "Documented equipment matching", type: "kv", items: [
       ["Matching status", sizing.equipment.status],

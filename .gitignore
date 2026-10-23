@@ -1,4 +1,7 @@
 node_modules/
+qa/tariff-synthetic-fixture.json
+qa/tariff-synthetic-quotation.pdf
+qa/tariff-pdf-*.png
 dist/
 .vercel/
 *.log

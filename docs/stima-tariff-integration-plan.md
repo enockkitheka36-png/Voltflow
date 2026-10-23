@@ -1,6 +1,22 @@
 # Kenya electricity-cost evidence and Stima Tracker integration
 
-Status: proposed integration, not implemented or connected. Reviewed on 23 October 2026.
+Status: independent manual-input calculator implemented for review on 23 October 2026. No live Stima Tracker connection, automatic tariff feed or utility certification.
+
+## Implemented first version
+
+The engineer's Finance screen now includes Electricity bill & tariff. The opt-in `VF-KE-FLAT-1` method supports one confirmed category rate for all units in a recent Kenyan reference month. It captures itemised rates, explicit VAT bases, fixed/demand charges, three official source links, the publication reference, reviewer and review date. All rates start blank; zero must be entered explicitly where not applicable. Invented regression-fixture rates are not current market rates.
+
+Applying requires a complete manual review and reconstruction within KES 1 of the current-period bill, excluding arrears and payment fees. The reference month must be current or one of the previous two months; source review must be within 90 days. Other historical months can be compared numerically but cannot drive annual savings. These are conservative software freshness policies, not regulatory rules.
+
+Savings use the same bill model before and after solar, retaining fixed and demand charges. Avoided imports are bounded by PV generation times the project's self-consumption assumption, captured annual loads and recorded imports. Annual savings repeat the representative month twelve times; existing escalation, degradation and P90 settings remain forecast assumptions. This is not an hourly dispatch model, measured performance or a guarantee of future prices.
+
+A deliberate review/apply action creates a versioned snapshot saved with the project and design inputs. Draft edits do not replace it or invalidate a selected design; applying or disabling a snapshot changes the design hash. The identifier supports reproducibility, not authenticated utility approval. Existing project-version storage retains issued snapshots; this calculator does not create a new immutable audit service.
+
+Invalid, stale, unsupported or bill-mismatched applied models hold commercial savings and exports rather than falling back silently. Users may deliberately return to the clearly labelled legacy flat-rate estimate. Recorded bill kWh is used for bill/load reconciliation when a reviewed model is active. Customer/lender reports and quotation PDFs include the reference and forecast limitations; audience projections omit raw drafts and reviewer details.
+
+Not supported: time-of-use, progressive blocks, power-factor surcharges, category switching, additional unmodelled adjustments, automatic demand reductions, export credits, tariff-driven battery dispatch, non-KES or non-grid-connected project models. Any such account requires a separate validated adapter and must not be forced through this model.
+
+Validation command: `npm run test:tariff` (also in `test:all`). Fixtures are deliberately synthetic and generated QA files are excluded from publication. Real-bill validation with authorised, redacted examples and the existing live security/ownership proofs remain launch requirements.
 
 ## Purpose and limits
 
@@ -16,7 +32,7 @@ No documented public Stima Tracker API, embedding permission, reuse licence or s
 ## Existing Voltflow integration points
 
 - `src/utils/energyImportEngine.js` already accepts energy-data rows and derives a suggested sizing basis through the existing draft-load / Update Sizing workflow. Keep measured consumption separate from tariff information.
-- `src/App.jsx` currently uses an editable `project.gridTariff` in a simplified, capped annual-savings calculation. A flat rate is not a full Kenyan electricity-bill reconstruction.
+- `src/App.jsx` retains editable `project.gridTariff` for legacy flat-rate estimates. Applied reviewed snapshots instead use `src/utils/electricityTariff.js` in both main and option sizing.
 - Keep the existing sizing engine, equipment matching and qualified-review gates. Tariff accuracy alone does not validate inverter selection, battery runtime, roof structure or an installation design.
 
 ## First development slice: Electricity bill and tariff evidence
@@ -27,7 +43,7 @@ No documented public Stima Tracker API, embedding permission, reuse licence or s
 4. Reconstruct the reference bill and compare it to the actual bill, showing the difference and any unexplained component. Credits, arrears, payment fees and one-off items must not be treated as electricity consumption.
 5. Require a deliberate review/apply action. Save the tariff version with the design/proposal so later updates cannot silently alter an already issued proposal.
 
-Suggested user-facing location: Plan / Energy data for bill evidence, and Finance / Tariff & savings for the reviewed cost breakdown. This is a proposal, not an existing screen.
+The cost breakdown is implemented in Finance. Bill-file evidence continues to use the existing protected evidence workflow; no new bill uploader or third-party transfer was added.
 
 ## Savings calculation
 
@@ -60,4 +76,4 @@ Stima Tracker is Kenya-specific. Other East African and South African utilities 
 - Permission boundaries for bill attachments and proposal snapshots; no customer identifiers in logs, third-party requests or GitHub fixtures.
 - Reproducible quote versions after a later tariff update, provider outage and retry.
 
-Implementation of this plan needs its own code changes and tests. The current GitHub publication does not add a live Stima Tracker connection, change electricity rates, or grant launch approval.
+The first manual-input slice above is implemented; the broader connector, dispatch and tariff adapters remain future work. This feature does not add a live Stima Tracker connection, supply current electricity rates, deploy the SaaS or grant launch approval.
