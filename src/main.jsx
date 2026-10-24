@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App.jsx'
+import { DeferredWorkspace } from './components/DeferredWorkspace.jsx'
 import './index.css'
 import { VoltflowPlatformProvider } from './platform/PlatformContext.jsx'
 import { SecureApplicationBoundary } from './platform/RestrictedPortal.jsx'
@@ -11,7 +11,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <AppErrorBoundary>
       <VoltflowPlatformProvider>
         <SecureApplicationBoundary>
-          <App />
+          <DeferredWorkspace />
         </SecureApplicationBoundary>
       </VoltflowPlatformProvider>
     </AppErrorBoundary>

@@ -258,7 +258,9 @@ test("18. Crash fallback, revision bailout and lazy JSON export are wired", () =
   );
   assert.ok(/setProject\(settleFailedDesignRevision\)/.test(appSource), "rejected revisions must use the stable bailout");
   assert.ok(!/data:application\/json;charset=utf-8/.test(appSource), "proposal JSON must not be expanded into a data URL during render");
-  assert.ok(/new Blob\(\[JSON\.stringify\(\{ project, loadItemsV2 \}/.test(appSource), "proposal JSON is created only on explicit export");
+  assert.ok(/navigateToTab\("storage"\);\s+showToast\("Use Export current project JSON/.test(appSource), "proposal delegates to complete backup tools");
+  assert.ok(/const exportCurrent = \(\) => \{[\s\S]*?exportProjectJson\(buildRecord/.test(appSource), "complete JSON is created only in the explicit export handler");
+  assert.ok(!/JSON\.stringify\(\{ project, loadItemsV2 \}/.test(appSource), "partial project-only backups cannot be exported");
 });
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

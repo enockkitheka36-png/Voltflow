@@ -7,6 +7,7 @@
  */
 
 import { getCommercialAvailability, normalizeInventoryLink } from "./inventoryAvailability.js";
+import { DOCUMENTED_ASSETS } from "./equipmentCatalogue.js";
 
 export const ASSET_CATEGORIES = [
   { key: "panels", label: "Panels", icon: "🔆", unit: "panel" },
@@ -50,6 +51,7 @@ export const DEFAULT_ASSETS = [
   A("ev_l2_22k", "ev_chargers", "Generic", "AC EV charger 22kW", "22 kW", "unit", 210000, "2 yr"),
   A("gen_ats", "generators", "Generic", "Genset ATS + integration", "—", "unit", 85000, "1 yr"),
   A("mon_iot", "monitoring", "Generic", "IoT monitoring gateway", "—", "unit", 20100, "1 yr"),
+  ...DOCUMENTED_ASSETS,
 ];
 
 export function listAssets(category = null, filter = "ALL_ASSETS", inventoryLinks = {}, options = {}) {

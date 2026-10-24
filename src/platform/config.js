@@ -1,7 +1,7 @@
 import { PlatformError, PLATFORM_ERROR_CODES } from "./errors.js";
 
 export const TRUST_FOUNDATION_VERSION = "Voltflow 11.8";
-export const PROVIDER_MODES = Object.freeze(["local-demo", "supabase"]);
+export const PROVIDER_MODES = Object.freeze(["local-demo", "supabase", "catalyst"]);
 export const EVIDENCE_BUCKET = "project-evidence";
 
 function decodeJwtPayload(value) {
@@ -45,6 +45,15 @@ export function resolvePlatformConfig(env = {}) {
       authRequired: false,
       evidenceBucket: EVIDENCE_BUCKET,
       localRole: String(env.VITE_VOLTFLOW_LOCAL_ROLE || "engineer").toLowerCase(),
+    };
+  }
+
+  if (mode === "catalyst") {
+    return {
+      mode,
+      cloudEnabled: true,
+      authRequired: true,
+      evidenceBucket: EVIDENCE_BUCKET,
     };
   }
 

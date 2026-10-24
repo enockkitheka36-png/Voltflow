@@ -37,10 +37,10 @@
 }
 
 .sidebar-logo-card {
-  background: var(--grad-accent);
+  background: #1b252d;
   padding: 1.25rem;
   border-radius: var(--radius-lg);
-  box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 10px 25px -5px rgba(2, 6, 23, 0.2);
   margin-bottom: 1.5rem;
   flex-shrink: 0;
 }

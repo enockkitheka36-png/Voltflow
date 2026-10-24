@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useVoltflowPlatform } from "./PlatformContext.jsx";
 import { checksumEvidenceFile } from "./evidenceAuthorization.js";
+import { BrandLogo } from "../components/BrandLogo.jsx";
 
 const page = {
   minHeight: "100vh",
@@ -44,7 +45,7 @@ function SignInPanel() {
   return (
     <main style={{ ...page, display: "grid", placeItems: "center", padding: "1rem" }}>
       <form onSubmit={submit} style={{ ...section, width: "min(420px, 100%)" }}>
-        <img src="/logo.png" alt="Voltflow" style={{ height: "44px", objectFit: "contain", marginBottom: "1rem" }} />
+        <BrandLogo style={{ height: "44px", marginBottom: "1rem" }} />
         <h1 style={{ fontSize: "1.35rem", margin: "0 0 0.3rem" }}>Sign in to Voltflow</h1>
         <p style={{ margin: "0 0 1rem", color: "#526079", fontSize: "0.88rem" }}>Use your organisation account.</p>
         <label style={{ display: "grid", gap: "0.3rem", marginBottom: "0.75rem", fontSize: "0.82rem", fontWeight: 700 }}>
@@ -73,7 +74,7 @@ function PortalHeader() {
   return (
     <header style={header}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0 }}>
-        <img src="/logo.png" alt="Voltflow" style={{ height: "34px", objectFit: "contain" }} />
+        <BrandLogo style={{ height: "34px" }} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeMembership?.organisationName || "Voltflow"}</div>
           <div style={{ fontSize: "0.72rem", opacity: 0.75, textTransform: "capitalize" }}>{activeMembership?.role || "member"}</div>

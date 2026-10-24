@@ -128,6 +128,21 @@ export function generateClientExplanation(project, sizing, readiness, billLoadRe
       nextSteps: "Add committed loads, confirm survey facts, then review the proposal with a qualified Solarise engineer.",
     };
   }
+  if (sizing?.quoteReady === false) {
+    const equipmentBlocked = sizing.equipment?.enabled && !sizing.equipment.quoteReady;
+    const nextStep = equipmentBlocked
+      ? "Resolve equipment matching in Asset library, including exact hardware, quantities, evidence and prices."
+      : sizing.tariffModel?.enabled && !sizing.tariffModel.ready ? "Review and apply the electricity bill and tariff inputs in Financials + DSCR."
+      : "Resolve the outstanding sizing checks before preparing a commercial proposal.";
+    return {
+      whatWeFound: `${sizing.quoteBlockedReason || "Design checks incomplete"}. This proposal is on hold.`,
+      recommendation: nextStep,
+      whatItWillDo: "Performance, backup and savings claims are on hold until the required design checks are complete.",
+      whatItWillNot: "This draft is not a priced offer, performance guarantee or engineering-approved design.",
+      assumptions: "Recorded hardware and site assumptions still require qualified review.",
+      nextSteps: nextStep,
+    };
+  }
   const daily     = (sizing?.dailyKwh    ?? 0).toFixed(1);
   const kwp       = (sizing?.actualKwp   ?? 0).toFixed(1);
   const batt      = (sizing?.batteryKwh  ?? 0).toFixed(1);
@@ -161,6 +176,7 @@ export function generateClientExplanation(project, sizing, readiness, billLoadRe
   const whatItWillDo =
     `This system will generate approximately ${annual.toLocaleString()} kWh of electricity per year. ` +
     `During grid outages, the battery will support your essential loads for approximately ${autonomy} hours. ` +
+    `This is a daily-average planning estimate, not guaranteed continuous runtime; actual backup depends on load timing, state of charge and battery condition. ` +
     (Number.isFinite(payback) && payback <= 10
       ? `Expected monthly savings are approximately KES ${savings}, with a payback period of ${payback.toFixed(1)} years. `
       : `Expected monthly savings are approximately KES ${savings}. `) +
@@ -173,7 +189,7 @@ export function generateClientExplanation(project, sizing, readiness, billLoadRe
 
   const assumptions =
     `This estimate is based on your monthly bill of KES ${bill}, a self-consumption rate of ${Math.round((project.selfConsumptionRate ?? 0.9) * 100)}%, ` +
-    `and a current grid tariff of KES ${tariff}/kWh. ` +
+    (sizing.tariffSummary ? `and the manually reviewed ${sizing.tariffSummary.billingMonth} electricity tariff. Fixed and demand charges remain. ${sizing.tariffSummary.assumption} ` : `and a current grid tariff of KES ${tariff}/kWh. `) +
     `Final savings depend on your actual usage patterns. We recommend 30 days of monitoring after installation to confirm performance.`;
 
   const nextSteps =

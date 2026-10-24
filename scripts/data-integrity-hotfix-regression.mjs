@@ -18,6 +18,7 @@ import { buildStudioBlocks } from "../src/utils/studioBlocks.js";
 import { generateClientExplanation } from "../src/utils/advisory.js";
 import { generateAccessoriesBoQ } from "../src/utils/accessoryEngine.js";
 import { reconcileBillAndLoads } from "../src/utils/billLoadReconciliation.js";
+import { canExportProjectBackup } from "../src/utils/projectSave.js";
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -128,7 +129,10 @@ test("4. Proposal is sanitized outside Engineer View", () => {
   assert.ok(/canShowInternalProposal && setProject && <ProposalStudioPanel/.test(app), "Proposal Studio hidden unless engineer");
   assert.ok(/canShowInternalProposal && \(/.test(app), "engineer-only action controls wrapped");
   assert.ok(/visibleReportModes\.map/.test(app), "report buttons are view-filtered");
-  assert.ok(/normalizeViewMode\(viewMode\) === "engineer"/.test(app), "storage JSON export is engineer-only");
+  assert.ok(/canExportProjectBackup\(normalizeViewMode\(viewMode\)/.test(app), "storage JSON export uses the shared access guard");
+  assert.strictEqual(canExportProjectBackup("engineer", { cloudEnabled: true, role: "engineer" }), true);
+  for (const viewMode of ["client", "bank", "technician"]) assert.strictEqual(canExportProjectBackup(viewMode), false);
+  assert.strictEqual(canExportProjectBackup("engineer", { cloudEnabled: true, role: "bank" }), false);
   assert.ok(/Project JSON hidden in this view/.test(app), "non-engineer storage message present");
   assert.ok(/canShowCommercialProposal = !isTechnicianView/.test(app), "technician commercial suppression exists");
   assert.ok(/canShowInternalProposal && accessoriesBoQ/.test(app), "BOS detail hidden from client/bank");

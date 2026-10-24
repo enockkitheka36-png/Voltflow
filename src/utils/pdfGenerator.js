@@ -1,18 +1,21 @@
 import { jsPDF } from 'jspdf';
 import { BLUEPRINT_TEMPLATES } from './loadEngine.js';
 import { getCableEstimates } from './installerSimulation.js';
+import { assertTariffForExport } from './electricityTariff.js';
 
 // Helper to format currency
 const nf = new Intl.NumberFormat("en-KE", { maximumFractionDigits: 0 });
 const money = (v) => `KES ${nf.format(Number.isFinite(v) ? v : 0)}`;
-const num = (v, d = 1) => Number(v || 0).toFixed(d);
-const pct = (v) => `${(Number(v || 0) * 100).toFixed(1)}%`;
+const num = (v, d = 1) => Number.isFinite(Number(v || 0)) ? Number(v || 0).toFixed(d) : 'N/A';
+const pct = (v) => Number.isFinite(Number(v || 0)) ? `${(Number(v || 0) * 100).toFixed(1)}%` : 'N/A';
 
 /**
  * Build the quotation PDF and return the jsPDF doc object WITHOUT saving.
  * Callers can append pages then call doc.save() themselves.
  */
 export function buildQuotationPDF(project, sizing, loads) {
+  assertTariffForExport(project, sizing);
+  if (project.equipmentSelection?.enabled && (!sizing.equipment?.quoteReady || sizing.quoteReady === false)) throw new Error("Resolve equipment matching and sizing checks before generating a quotation.");
   // Create a standard A4 portrait PDF (210mm x 297mm)
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -24,11 +27,14 @@ export function buildQuotationPDF(project, sizing, loads) {
   const pageHeight = 297;
   const margin = 15;
   const contentWidth = pageWidth - (margin * 2); // 180mm
+  const quotationDate = new Date().toLocaleDateString('en-KE');
+  const quotationReference = project.projectRef?.reference || `SOL-${Date.now().toString().slice(-6)}`;
 
   let y = 18;
 
   // Helpers to draw headers and text
   const printHeader = () => {
+    y = 18;
     // Top Color bar
     doc.setFillColor(16, 185, 129); // Emerald Primary
     doc.rect(0, 0, pageWidth, 5, 'F');
@@ -48,13 +54,13 @@ export function buildQuotationPDF(project, sizing, loads) {
     doc.setFont('Helvetica', 'bold');
     doc.setFontSize(10);
     doc.setTextColor(16, 185, 129);
-    doc.text('OFFICIAL QUOTATION', pageWidth - margin, y, { align: 'right' });
+    doc.text(project.equipmentSelection?.enabled ? sizing.equipment?.commercialBasis === 'SUPPLIER_QUOTE' ? 'DRAFT QUOTATION' : 'DRAFT ESTIMATE' : 'OFFICIAL QUOTATION', pageWidth - margin, y, { align: 'right' });
     
     doc.setFont('Helvetica', 'normal');
     doc.setFontSize(8.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Date: ${new Date().toLocaleDateString()}`, pageWidth - margin, y + 4.5, { align: 'right' });
-    doc.text(`Ref: SOL-${Date.now().toString().slice(-6)}`, pageWidth - margin, y + 8, { align: 'right' });
+    doc.text(`Date: ${quotationDate}`, pageWidth - margin, y + 4.5, { align: 'right' });
+    doc.text(`Ref: ${quotationReference}`, pageWidth - margin, y + 8, { align: 'right' });
 
     // Divider Line
     doc.setDrawColor(226, 232, 240); // Slate border
@@ -66,10 +72,28 @@ export function buildQuotationPDF(project, sizing, loads) {
   printHeader();
 
   // Client Details Box
+  const metadataColumns = [
+    [['Client Name', project.client], ['Location', project.location], ['Prepared By', project.preparedBy]],
+    [['System Type', project.systemType], ['Connection Phase', project.phase], ['Design Stage', project.designStage || 'Feasibility']],
+  ];
+  if (sizing.tariffSummary) {
+    metadataColumns[0].push(['Tariff month', sizing.tariffSummary.billingMonth]);
+    metadataColumns[1].push(['Tariff version', sizing.tariffSummary.version.slice(-12)]);
+  }
+  const metadataColumnWidth = (contentWidth - 16) / 2;
+  const metadataValueOffset = 33;
+  doc.setFont('Helvetica', 'bold');
+  doc.setFontSize(9);
+  const metadataRows = metadataColumns[0].map((field, rowIndex) => metadataColumns.map((column) => ({
+    label: column[rowIndex][0],
+    lines: doc.splitTextToSize(String(column[rowIndex][1] || 'N/A'), metadataColumnWidth - metadataValueOffset),
+  })));
+  const metadataRowHeights = metadataRows.map((row) => Math.max(...row.map((field) => field.lines.length)) * 4.2 + 2.5);
+  const metadataHeight = 14 + metadataRowHeights.reduce((total, height) => total + height, 0);
   doc.setFillColor(248, 250, 252); // Pale Slate background
-  doc.rect(margin, y, contentWidth, 32, 'F');
+  doc.rect(margin, y, contentWidth, metadataHeight, 'F');
   doc.setDrawColor(226, 232, 240);
-  doc.rect(margin, y, contentWidth, 32, 'S');
+  doc.rect(margin, y, contentWidth, metadataHeight, 'S');
 
   doc.setFont('Helvetica', 'bold');
   doc.setFontSize(11);
@@ -80,53 +104,22 @@ export function buildQuotationPDF(project, sizing, loads) {
   doc.setLineWidth(0.2);
   doc.line(margin + 5, y + 8, margin + contentWidth - 5, y + 8);
 
-  doc.setFontSize(9.5);
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105);
+  let metadataRowY = y + 14;
+  metadataRows.forEach((row, rowIndex) => {
+    row.forEach((field, columnIndex) => {
+      const columnX = margin + 6 + columnIndex * (metadataColumnWidth + 4);
+      doc.setFontSize(9);
+      doc.setFont('Helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text(`${field.label}:`, columnX, metadataRowY);
+      doc.setFont('Helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      field.lines.forEach((line, lineIndex) => doc.text(line, columnX + metadataValueOffset, metadataRowY + lineIndex * 4.2));
+    });
+    metadataRowY += metadataRowHeights[rowIndex];
+  });
 
-  // Column 1
-  doc.text(`Client Name:`, margin + 6, y + 14);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(project.client || 'N/A', margin + 30, y + 14);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105);
-  doc.text(`Location:`, margin + 6, y + 20);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(project.location || 'N/A', margin + 30, y + 20);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105);
-  doc.text(`Prepared By:`, margin + 6, y + 26);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(project.preparedBy || 'N/A', margin + 30, y + 26);
-
-  // Column 2
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105);
-  doc.text(`System Type:`, margin + 100, y + 14);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(project.systemType || 'N/A', margin + 128, y + 14);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105);
-  doc.text(`Connection Phase:`, margin + 100, y + 20);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(project.phase || 'N/A', margin + 128, y + 20);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105);
-  doc.text(`Design Stage:`, margin + 100, y + 26);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(project.designStage || 'Feasibility', margin + 128, y + 26);
-
-  y += 38;
+  y += metadataHeight + 6;
 
   // Technical Sizing Results
   doc.setFont('Helvetica', 'bold');
@@ -177,7 +170,7 @@ export function buildQuotationPDF(project, sizing, loads) {
   const econMetrics = [
     { label: 'SYSTEM PR', val: pct(sizing.pr), desc: 'Computed loss standard' },
     { label: 'ANNUAL YIELD', val: `${num(sizing.annualEnergy, 0)} kWh`, desc: 'P50 Annual estimate' },
-    { label: 'SIMPLE PAYBACK', val: `${num(sizing.payback, 1)} Years`, desc: 'P50 Baseline' },
+    { label: 'SIMPLE PAYBACK', val: Number.isFinite(sizing.payback) ? `${num(sizing.payback, 1)} Years` : 'Not reached', desc: 'P50 Baseline' },
     { label: 'LCOE P50', val: `${num(sizing.lcoe, 1)} KES/kWh`, desc: 'Levelised Energy Cost' }
   ];
 
@@ -216,30 +209,31 @@ export function buildQuotationPDF(project, sizing, loads) {
   const headers = ['#', 'Description', 'Qty', 'Unit', 'Unit Cost (KES)', 'Total Cost (KES)'];
   const colSizes = [10, 75, 12, 12, 35, 36];
 
-  // Draw Header Row
-  doc.setFillColor(15, 23, 42); // Deep Slate
-  doc.rect(margin, y, contentWidth, 8, 'F');
-  
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.setTextColor(255, 255, 255);
-
   let tempX = margin;
-  headers.forEach((header, index) => {
-    const align = (index >= 4) ? 'right' : 'left';
-    const cellPadding = (index >= 4) ? colSizes[index] - 4 : 3;
-    doc.text(header, tempX + cellPadding, y + 5.5, { align });
-    tempX += colSizes[index];
-  });
-  
-  y += 8;
+  const drawTableHeader = () => {
+    doc.setFillColor(15, 23, 42);
+    doc.rect(margin, y, contentWidth, 8, 'F');
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(255, 255, 255);
+    tempX = margin;
+    headers.forEach((header, index) => {
+      const align = index >= 4 ? 'right' : 'left';
+      const cellPadding = index >= 4 ? colSizes[index] - 4 : 3;
+      doc.text(header, tempX + cellPadding, y + 5.5, { align });
+      tempX += colSizes[index];
+    });
+    y += 8;
+  };
+  if (y + 22 > pageHeight - margin) { doc.addPage(); printHeader(); }
+  drawTableHeader();
 
   // Compile BOQ rows
   const boqRows = [
-    ["1.1", "PV Panels", sizing.panels, "panels", project.panelCost, sizing.pvCost],
+    ["1.1", sizing.equipment?.models?.panel || "PV Panels", sizing.panels, "panels", project.panelCost, sizing.pvCost],
     ["1.2", "Mounting rails, clamps & structural hardware", sizing.panels, "sets", project.mountingPerPanel, sizing.mountingCost],
-    ["2.1", "Hybrid/Grid-tied inverter suite", 1, "unit", sizing.inverterCost, sizing.inverterCost],
-    ["3.1", `Battery modules (${project.batteryChemistry})`, sizing.batteryModules, "units", project.batteryModuleCost, sizing.batteryModules * project.batteryModuleCost],
+    ["2.1", sizing.equipment?.models?.inverter || "Hybrid/Grid-tied inverter suite", 1, "unit", sizing.inverterCost, sizing.inverterCost],
+    ["3.1", sizing.equipment?.models?.battery || `Battery modules (${project.batteryChemistry})`, sizing.batteryModules, "units", project.batteryModuleCost, sizing.batteryModules * project.batteryModuleCost],
     ["3.2", "Battery rack, active BMS & interconnects", 1, "lot", 16000, 16000],
     ["4.1", "DC/AC cabling, breakers, SPDs, earthing lot", 1, "lot", project.cablingProtectionCost, project.cablingProtectionCost],
     ["5.1", "IoT monitoring datalogger module", 1, "lot", project.monitoringCost, project.monitoringCost],
@@ -278,14 +272,22 @@ export function buildQuotationPDF(project, sizing, loads) {
   doc.setTextColor(51, 65, 85);
 
   boqRows.forEach((row, rowIndex) => {
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(8);
+    const descriptionLines = doc.splitTextToSize(String(row[1]), colSizes[1] - 6);
+    const rowHeight = Math.max(7, descriptionLines.length * 3.5 + 3);
+    if (y + rowHeight > pageHeight - margin) { doc.addPage(); printHeader(); drawTableHeader(); }
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(51, 65, 85);
     // Alternate row backgrounds
     if (rowIndex % 2 === 1) {
       doc.setFillColor(250, 250, 250);
-      doc.rect(margin, y, contentWidth, 7, 'F');
+      doc.rect(margin, y, contentWidth, rowHeight, 'F');
     }
 
     doc.setDrawColor(241, 245, 249);
-    doc.line(margin, y + 7, margin + contentWidth, y + 7);
+    doc.line(margin, y + rowHeight, margin + contentWidth, y + rowHeight);
 
     tempX = margin;
     row.forEach((cell, cellIndex) => {
@@ -297,14 +299,16 @@ export function buildQuotationPDF(project, sizing, loads) {
         textVal = nf.format(cell);
       }
       
-      doc.text(String(textVal), tempX + cellPadding, y + 5, { align });
+      if (cellIndex === 1) descriptionLines.forEach((line, lineIndex) => doc.text(line, tempX + cellPadding, y + 5 + lineIndex * 3.5));
+      else doc.text(String(textVal), tempX + cellPadding, y + 5, { align });
       tempX += colSizes[cellIndex];
     });
 
-    y += 7;
+    y += rowHeight;
   });
 
   // Grand Total Row
+  if (y + 12 > pageHeight - margin) { doc.addPage(); printHeader(); }
   doc.setFillColor(15, 23, 42);
   doc.rect(margin, y, contentWidth, 9, 'F');
   
@@ -317,34 +321,29 @@ export function buildQuotationPDF(project, sizing, loads) {
   y += 18;
 
   // If there are safety warnings, print a signature and compliance block on a new page or fit if space is available
-  if (y > pageHeight - 45) {
-    doc.addPage();
-    y = 15;
-    printHeader();
-    y += 10;
-  }
-
   // Engineering Warnings Banner if present
   if (sizing.warnings && sizing.warnings.length > 0) {
-    doc.setFillColor(254, 243, 199); // Amber background
-    doc.setDrawColor(253, 230, 138);
-    
-    const bannerHeight = 8 + (sizing.warnings.length * 4.5);
-    doc.rect(margin, y, contentWidth, bannerHeight, 'F');
-    doc.rect(margin, y, contentWidth, bannerHeight, 'S');
-
-    doc.setFont('Helvetica', 'bold');
-    doc.setFontSize(8.5);
-    doc.setTextColor(120, 53, 15);
-    doc.text('⚠️ ENGINEERING COMPLIANCE & SAFETY WARNINGS:', margin + 4, y + 5);
-
     doc.setFont('Helvetica', 'normal');
     doc.setFontSize(7.5);
-    sizing.warnings.forEach((warning, wIdx) => {
-      doc.text(`• ${warning}`, margin + 5, y + 10 + (wIdx * 4.5), { maxWidth: contentWidth - 10 });
-    });
-
-    y += bannerHeight + 8;
+    const warningLines = sizing.warnings.flatMap((warning) => doc.splitTextToSize(`- ${String(warning).replace(/[\u2600-\u27BF\uFE0F]/g, '')}`, contentWidth - 10));
+    let warningOffset = 0;
+    while (warningOffset < warningLines.length) {
+      if (y + 20 > pageHeight - margin) { doc.addPage(); printHeader(); }
+      const count = Math.min(warningLines.length - warningOffset, Math.max(1, Math.floor((pageHeight - margin - y - 14) / 3.8)));
+      const bannerHeight = 14 + count * 3.8;
+      doc.setFillColor(254, 243, 199);
+      doc.setDrawColor(253, 230, 138);
+      doc.rect(margin, y, contentWidth, bannerHeight, 'FD');
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(120, 53, 15);
+      doc.text('ENGINEERING COMPLIANCE & SAFETY WARNINGS:', margin + 4, y + 5);
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(7.5);
+      warningLines.slice(warningOffset, warningOffset + count).forEach((line, lineIndex) => doc.text(line, margin + 5, y + 10 + lineIndex * 3.8));
+      warningOffset += count;
+      y += bannerHeight + 6;
+    }
   }
 
   if (y > pageHeight - 35) {
@@ -401,9 +400,19 @@ export function buildQuotationPDF(project, sizing, loads) {
   doc.setFontSize(7.5);
   doc.setTextColor(148, 163, 184);
   const disclaimerText = 'Disclaimer: This document is a feasibility-level system sizing and financial estimate. Final cable ampacity, protection coordination, earthing/bonding, SPD selection, KPLC/EPRA interconnection approval, and commissioning tests must be verified by qualified personnel before installation. Produced by Solarise Insight Limited.';
-  doc.text(disclaimerText, margin, y, { maxWidth: contentWidth });
+  const tariffDisclaimer = sizing.tariffSummary ? ` Savings use the reviewed ${sizing.tariffSummary.billingMonth} reference tariff, with fixed and demand charges retained. Annual figures repeat a representative month and remain forecasts, not guaranteed savings.` : '';
+  const disclaimerLines = doc.splitTextToSize(disclaimerText + tariffDisclaimer, contentWidth);
+  doc.setFont('Helvetica', 'normal');
+  doc.setFontSize(8);
+  const preparedByLines = doc.splitTextToSize(String(project.preparedBy || 'Solarise Lead Engineer'), 90);
+  const closingHeight = disclaimerLines.length * 3.5 + 24 + preparedByLines.length * 3.5;
+  if (y + closingHeight > pageHeight - margin) { doc.addPage(); printHeader(); }
+  doc.setFont('Helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(148, 163, 184);
+  disclaimerLines.forEach((line, lineIndex) => doc.text(line, margin, y + lineIndex * 3.5));
 
-  y += 12;
+  y += disclaimerLines.length * 3.5 + 6;
 
   // Signatures
   doc.setFont('Helvetica', 'bold');
@@ -413,7 +422,7 @@ export function buildQuotationPDF(project, sizing, loads) {
   doc.line(margin, y + 12, margin + 50, y + 12);
   doc.setFont('Helvetica', 'normal');
   doc.setFontSize(8);
-  doc.text(project.preparedBy || 'Solarise Lead Engineer', margin, y + 15);
+  preparedByLines.forEach((line, lineIndex) => doc.text(line, margin, y + 15 + lineIndex * 3.5));
 
   doc.setFont('Helvetica', 'bold');
   doc.setFontSize(9);

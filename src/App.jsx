@@ -1,5 +1,21 @@
-import React, { useMemo, useState, useEffect, useRef } from "react";
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
+import { BrandLogo } from "./components/BrandLogo.jsx";
+import EquipmentMatchingPanel from "./components/EquipmentMatchingPanel.jsx";
+import ElectricityTariffPanel from "./components/ElectricityTariffPanel.jsx";
+import SitePhotoGallery from "./components/SitePhotoGallery.jsx";
+import ResidentialEvPlanner from "./components/ResidentialEvPlanner.jsx";
+import ImpactEquivalents from "./components/ImpactEquivalents.jsx";
+import InstalledAssetRegister from "./components/InstalledAssetRegister.jsx";
+import { countSitePhotos } from "./utils/sitePhotos.js";
+import { normalizeTariffState, evaluateProjectTariff, gateTariffSizing, tariffToday } from "./utils/electricityTariff.js";
+import { normalizeEquipmentSelection, resolveEquipmentProject, equipmentPanelCount, equipmentBatteryCount, equipmentBankLimits, gateEquipmentSizing } from "./utils/equipmentMatching.js";
+import { WorkspaceHome } from "./components/workspace/WorkspaceHome.jsx";
+import { WorkspaceNavigation } from "./components/workspace/WorkspaceNavigation.jsx";
+import { WorkspaceHeader } from "./components/workspace/WorkspaceHeader.jsx";
+import { getWorkspaceNavigation } from "./utils/workspaceNavigation.js";
+import { SaveFeedback } from "./components/SaveFeedback.jsx";
+import { canExportProjectBackup, saveCloudProjectAndRefresh } from "./utils/projectSave.js";
 import {
   PageHeader, SectionHeader, CardGrid, FormGrid, ActionBar, StickySummaryPanel,
   ResponsiveTable, ResponsiveDataTable, EmptyState, StatusPill, WarningPanel,
@@ -392,6 +408,7 @@ const defaultProject = {
   mgHouseholds: 50,
   mgCommercialCustomers: 5,
   mgAnchorLoad: 0,
+  mgAnchorHours: 12,
   mgHouseholdLoadKwh: 1.5,
   mgCommercialLoadKwh: 8.0,
   mgResidentialTariff: 45,
@@ -422,6 +439,7 @@ const defaultProject = {
   contingency: 0.05,
   vat: 0.16,
   gridTariff: 22,
+  electricityTariff: null,
   tariffEscalation: 0.08,
   discountRate: 0.12,
   projectLife: 25,
@@ -699,6 +717,7 @@ function normalizeLoadedRecord(raw) {
   mergedProject.blueprint  = normalizeBlueprintAssumptions(mergedProject.blueprint);
   mergedProject.quoteStage = normalizeQuoteStage(mergedProject.quoteStage);
   mergedProject.energyImport = normalizeEnergyImport(mergedProject.energyImport);
+  mergedProject.electricityTariff = normalizeTariffState(mergedProject.electricityTariff);
   mergedProject.viewMode = normalizeViewMode(mergedProject.viewMode);
   // v11.5 — Voltflow Delivery. Old projects have no delivery object; they get a
   // default one (stage "lead") so every delivery screen renders safely.
@@ -719,6 +738,8 @@ function normalizeLoadedRecord(raw) {
   mergedProject.proposalStudioConfig = normalizeProposalStudioConfig(mergedProject.proposalStudioConfig);
   mergedProject.assetSelections = normalizeAssetSelections(mergedProject.assetSelections);
   mergedProject.batterySelection = normalizeBatterySelection(mergedProject.batterySelection);
+  mergedProject.equipmentSelection = normalizeEquipmentSelection(mergedProject.equipmentSelection);
+  Object.assign(mergedProject, resolveEquipmentProject(mergedProject));
   mergedProject.inventoryLinks = mergedProject.inventoryLinks && typeof mergedProject.inventoryLinks === "object" ? mergedProject.inventoryLinks : {};
   mergedProject.designRevision = mergedProject.designRevision && typeof mergedProject.designRevision === "object" ? mergedProject.designRevision : null;
   mergedProject.selectedDesignOption = mergedProject.selectedDesignOption && typeof mergedProject.selectedDesignOption === "object" ? mergedProject.selectedDesignOption : null;
@@ -779,7 +800,7 @@ function applyLoadInventoryGate(result, reason) {
     "targetDailyKwh", "requiredKwp", "panels", "actualKwp", "dailySolarKwh", "annualEnergy", "annualEnergyP90", "specificYield", "roofArea",
     "backupEnergyNeed", "requiredBatteryKwh", "batteryModules", "batteryKwh", "usableBatteryKwh", "autonomyHours",
     "peakKw", "loadBasedInvKw", "pvBasedInvKw", "engineeringMinInvKw", "inverterKw", "dcAcRatio",
-    "pvCost", "mountingCost", "inverterCost", "batteryCost", "subtotalBeforeContingency", "contingencyAmount", "subtotal", "vatAmount", "totalCost",
+    "pvCost", "mountingCost", "inverterCost", "batteryCost", "subtotalBeforeContingency", "contingencyAmount", "subtotal", "vatAmount", "totalCost", "investmentCost",
     "uncappedAnnualSavings", "annualSavings", "annualSavingsP90", "monthlySavings", "annualOM", "annualNet", "annualNetP90",
     "debtPrincipal", "equityRequired", "annualDebtService", "dscrYear1", "npv10", "npvLife", "equityNpvLife", "irrLife", "equityIrr",
     "lcoe", "lcoeP90", "lcoeReal", "lcoeP90Real", "discountedLcoe", "discountedLcoeP90",
@@ -820,6 +841,7 @@ function npv(rate, cashflows) {
 }
 
 function irr(cashflows, guess = 0.2) {
+  if (!cashflows.some(value => value > 0) || !cashflows.some(value => value < 0)) return null;
   let rate = guess;
   for (let i = 0; i < 80; i++) {
     let f = 0;
@@ -831,10 +853,10 @@ function irr(cashflows, guess = 0.2) {
     if (Math.abs(df) < 1e-9) break;
     const next = rate - f / df;
     if (!Number.isFinite(next) || next <= -0.99) break;
-    if (Math.abs(next - rate) < 1e-7) return next;
+    if (Math.abs(next - rate) < 1e-7 && Math.abs(npv(next, cashflows)) <= Math.max(0.01, Math.abs(cashflows[0]) * 1e-8)) return next;
     rate = next;
   }
-  return rate;
+  return null;
 }
 
 function annualPayment(principal, annualRate, years) {
@@ -941,8 +963,9 @@ function computeOptionSizingLegacyUnused(proj, loads) {
 // Project persistence lives in utils/projectStorage.js (v11.3) — one home for
 // local storage today and the cloud backend later.
 
-function useSizing(project, loads) {
+function useSizing(projectInput, loads) {
   return useMemo(() => {
+    const project = resolveEquipmentProject(projectInput);
     const pr = computedPerformanceRatio(project);
     const connectedW = loads.reduce((s, l) => s + l.qty * l.watts, 0);
     const dayKwh = loads.reduce((s, l) => s + loadEnergy(l, "dayHours"), 0);
@@ -952,7 +975,7 @@ function useSizing(project, loads) {
     const evSizingDailyKwh = project.systemType === "EV charging" ? evSizingSpec.kw * project.evChargersTotal * project.evDailyChargingHours * project.evOccupancy : 0;
     const mgSizingHouseholdKwh = project.systemType === "Mini-grid" ? project.mgHouseholds * project.mgHouseholdLoadKwh : 0;
     const mgSizingCommercialKwh = project.systemType === "Mini-grid" ? project.mgCommercialCustomers * project.mgCommercialLoadKwh : 0;
-    const mgSizingAnchorKwh = project.systemType === "Mini-grid" ? project.mgAnchorLoad * 12 : 0;
+    const mgSizingAnchorKwh = project.systemType === "Mini-grid" ? project.mgAnchorLoad * Math.max(0, Math.min(24, Number(project.mgAnchorHours ?? 12) || 0)) : 0;
     const mgSizingCommunityDailyKwh = mgSizingHouseholdKwh + mgSizingCommercialKwh + mgSizingAnchorKwh;
     const designDailyKwh = project.systemType === "EV charging" ? evSizingDailyKwh : project.systemType === "Mini-grid" ? mgSizingCommunityDailyKwh : dailyKwh;
     const loadInventoryInvalid = hasInvalidLoadHours(loads);
@@ -969,7 +992,7 @@ function useSizing(project, loads) {
 
     const targetDailyKwh = designDailyKwh * project.solarCoverage;
     const requiredKwp = targetDailyKwh / Math.max(project.psh * pr, 0.1);
-    const panels = Math.max(1, Math.ceil((requiredKwp * 1000) / project.panelW));
+    const panels = equipmentPanelCount(project, Math.max(1, Math.ceil((requiredKwp * 1000) / project.panelW)));
     const actualKwp = (panels * project.panelW) / 1000;
     const dailySolarKwh = actualKwp * project.psh * pr;
     const annualEnergy = dailySolarKwh * 365;
@@ -1008,7 +1031,7 @@ function useSizing(project, loads) {
       backupEnergyNeed / Math.max(project.dod * project.batteryEfficiency, 0.1),
       evBatteryBufferKwh
     );
-    const batteryModules = Math.max(1, Math.ceil(requiredBatteryKwh / project.batteryModuleKwh));
+    const batteryModules = equipmentBatteryCount(project, Math.max(1, Math.ceil(requiredBatteryKwh / project.batteryModuleKwh)));
     const batteryKwh = batteryModules * project.batteryModuleKwh;
     const usableBatteryKwh = batteryKwh * project.dod * project.batteryEfficiency;
     const autonomyHours = backupReferenceKw > 0 ? usableBatteryKwh / backupReferenceKw : 0;
@@ -1029,11 +1052,14 @@ function useSizing(project, loads) {
     const inverterKw = inverterSizing.selectedInverterKw;
     const dcAcAnalysis = computeDcAcAnalysis({ actualKwp, inverterKw, panelW: project.panelW, basis: inverterSizing.basis, selectedReason: inverterSizing.selectedReason });
     const dcAcRatio = dcAcAnalysis.ratio;
-    const batteryInputA = (inverterKw * 1000 * 1.25) / Math.max(project.batteryVoltage * 0.8, 1);
+    const batteryInputA = project.equipmentSelection?.enabled
+      ? (loadBasedInvKw * 1000) / Math.max((equipmentBankLimits(project.equipmentSelection).minimumVoltage || 0) * project.batteryEfficiency, 1)
+      : (inverterKw * 1000 * 1.25) / Math.max(project.batteryVoltage * 0.8, 1);
     const batteryChemistry = batteryChemistries[project.batteryChemistry];
     const batteryNominalAh = (batteryKwh * 1000) / Math.max(project.batteryVoltage, 1);
-    const bmsMaxChargeA = batteryNominalAh * batteryChemistry.chargeC;
-    const bmsMaxDischargeA = batteryNominalAh * batteryChemistry.dischargeC;
+    const documentedBank = project.equipmentSelection?.enabled ? equipmentBankLimits(project.equipmentSelection) : null;
+    const bmsMaxChargeA = documentedBank ? documentedBank.currentA : batteryNominalAh * batteryChemistry.chargeC;
+    const bmsMaxDischargeA = documentedBank ? documentedBank.currentA : batteryNominalAh * batteryChemistry.dischargeC;
 
     const vocCold = project.moduleVoc * (1 + project.tempCoeffVoc * (project.minTemp - 25));
     const maxPanelsPerString = Math.max(1, Math.floor(project.inverterMaxDcV / Math.max(vocCold, 1)));
@@ -1082,8 +1108,8 @@ function useSizing(project, loads) {
     const cableAmpacityTable = { 2.5: 20, 4: 26, 6: 34, 10: 46, 16: 63, 25: 85, 35: 105, 50: 130 };
     const dcCableAdvisoryA = cableAmpacityTable[project.dcCableSizeMm2] ?? 0;
     const acCableAdvisoryA = cableAmpacityTable[project.acCableSizeMm2] ?? 0;
-    const dcCableAmpacityOk = dcCableAdvisoryA === 0 || dcCableAdvisoryA >= dcCableRatedA;
-    const acCableAmpacityOk = acCableAdvisoryA === 0 || acCableAdvisoryA >= acBreakerDesignA;
+    const dcCableAmpacityOk = dcCableAdvisoryA > 0 && dcCableAdvisoryA >= dcCableRatedA;
+    const acCableAmpacityOk = acCableAdvisoryA > 0 && acCableAdvisoryA >= acBreakerDesignA;
 
     const dcAcStatus = dcAcAnalysis.status; // v11.6 — from the coherence engine
 
@@ -1131,9 +1157,10 @@ function useSizing(project, loads) {
     const vatAmount = quote.tax;
     const totalCost = quote.total_gross;
 
-    const uncappedAnnualSavings = annualEnergy * project.selfConsumptionRate * project.gridTariff;
+    const uncappedAnnualSavings = Math.min(annualEnergy * project.selfConsumptionRate, designDailyKwh * 365) * project.gridTariff;
     const annualBillLimit = project.monthlyBill * 12 * project.solarCoverage;
-    const annualSavings = project.capSavingsToBill ? Math.min(uncappedAnnualSavings, annualBillLimit) : uncappedAnnualSavings;
+    const tariffModel = evaluateProjectTariff(project, { annualEnergy, annualLoadKwh: designDailyKwh * 365 });
+    const annualSavings = tariffModel.enabled ? tariffModel.annualSavings : project.capSavingsToBill ? Math.min(uncappedAnnualSavings, annualBillLimit) : uncappedAnnualSavings;
     const annualSavingsP90 = annualSavings * project.p90Factor;
     const monthlySavings = annualSavings / 12;
     const carbonStandardData = carbonStandards[project.carbonStandard] || carbonStandards.VCS;
@@ -1203,7 +1230,7 @@ function useSizing(project, loads) {
     // isMiniGrid already declared above
     const totalHouseholdKwh = isMiniGrid ? project.mgHouseholds * project.mgHouseholdLoadKwh : 0;
     const totalCommercialKwh = isMiniGrid ? project.mgCommercialCustomers * project.mgCommercialLoadKwh : 0;
-    const totalAnchorKwh = isMiniGrid ? project.mgAnchorLoad * 12 : 0;
+    const totalAnchorKwh = isMiniGrid ? project.mgAnchorLoad * Math.max(0, Math.min(24, Number(project.mgAnchorHours ?? 12) || 0)) : 0;
     const communityDailyKwh = totalHouseholdKwh + totalCommercialKwh + totalAnchorKwh;
     const annualResidentialRevenue = totalHouseholdKwh * 365 * project.mgResidentialTariff;
     const annualCommercialRevenue = totalCommercialKwh * 365 * project.mgCommercialTariff;
@@ -1235,25 +1262,26 @@ function useSizing(project, loads) {
       ? annualSavingsP90 + annualGensetSavings * project.p90Factor - annualOM
       : annualSavingsP90 + (project.carbonInCashflow ? carbonValue * project.p90Factor : 0) - annualOM;
     const carbonShareOfRevenue = annualNet > 0 ? annualNetCarbonRevenue / annualNet : 0;
-    const payback = annualNet > 0 ? totalCost / annualNet : Infinity;
-    const gensetHybridPayback = totalAnnualBenefit > 0 ? totalCost / totalAnnualBenefit : Infinity;
-    const paybackP90 = annualNetP90 > 0 ? totalCost / annualNetP90 : Infinity;
+    const investmentCost = miniGridTotalCost;
+    const payback = annualNet > 0 ? investmentCost / annualNet : Infinity;
+    const gensetHybridPayback = totalAnnualBenefit > 0 ? investmentCost / totalAnnualBenefit : Infinity;
+    const paybackP90 = annualNetP90 > 0 ? investmentCost / annualNetP90 : Infinity;
 
-    const debtPrincipal = totalCost * project.debtShare;
-    const equityRequired = totalCost - debtPrincipal;
+    const debtPrincipal = investmentCost * project.debtShare;
+    const equityRequired = investmentCost - debtPrincipal;
     const annualDebtService = annualPayment(debtPrincipal, project.loanInterest, project.loanTerm);
     const dscrYear1 = annualDebtService > 0 ? annualNetP90 / annualDebtService : Infinity;
 
-    const cashflows = [-totalCost];
+    const cashflows = [-investmentCost];
     const equityCashflows = [-equityRequired];
     const annualRows = [];
     let lifetimeEnergy = 0;
     let lifetimeEnergyP90 = 0;
-    let cumulativeProjectCash = -totalCost;
+    let cumulativeProjectCash = -investmentCost;
     let cumulativeEquityCash = -equityRequired;
-    let cumulativeDiscounted = -totalCost;
+    let cumulativeDiscounted = -investmentCost;
     // Phase 6: Discounted LCOE accumulators
-    let discountedCostAccum = totalCost;
+    let discountedCostAccum = investmentCost;
     let discountedEnergyAccum = 0;
     const battChemForRepl = batteryChemistries[project.batteryChemistry] ?? batteryChemistries.LFP;
     for (let y = 1; y <= project.projectLife; y++) {
@@ -1320,8 +1348,8 @@ function useSizing(project, loads) {
     const equityNpvLife = npv(project.discountRate, equityCashflows);
     const irrLife = irr(cashflows);
     const equityIrr = irr(equityCashflows);
-    const lcoe = lifetimeEnergy > 0 ? (totalCost + annualOM * project.projectLife) / lifetimeEnergy : 0;
-    const lcoeP90 = lifetimeEnergyP90 > 0 ? (totalCost + annualOM * project.projectLife) / lifetimeEnergyP90 : 0;
+    const lcoe = lifetimeEnergy > 0 ? (investmentCost + annualOM * project.projectLife) / lifetimeEnergy : 0;
+    const lcoeP90 = lifetimeEnergyP90 > 0 ? (investmentCost + annualOM * project.projectLife) / lifetimeEnergyP90 : 0;
     const lcoeReal = lcoe / Math.pow(1 + project.inflationRate, project.projectLife / 2);
     const lcoeP90Real = lcoeP90 / Math.pow(1 + project.inflationRate, project.projectLife / 2);
     const breakEvenTariff = lcoe * 1.25;
@@ -1336,7 +1364,7 @@ function useSizing(project, loads) {
       const costFactor = 0.85 + seeded(i + 1) * 0.3;
       const energyFactor = 0.85 + seeded(i + 401) * 0.3;
       const tariffFactor = 0.85 + seeded(i + 801) * 0.3;
-      const scenarioCost = totalCost * costFactor;
+      const scenarioCost = investmentCost * costFactor;
       const scenarioAnnualOM = scenarioCost * project.oAndMRate;
       // Use the correct revenue base per system type (Audit H4)
       const mcBase = isEVCharging ? annualEVProfit
@@ -1361,6 +1389,7 @@ function useSizing(project, loads) {
     if ((project.systemType === "EV charging" || project.systemType === "Mini-grid") && dailyKwh > 0 && Math.abs(dailyKwh - designDailyKwh) / Math.max(designDailyKwh, 1) > 0.25) {
       warnings.push("Specialist system demand differs materially from the manual Load Assessment table. PV sizing is using the specialist module demand; align the load table before issuing a final quote.");
     }
+    if (!inverterSizing.loadSupported || inverterSizing.catalogueExceeded) warnings.push("Selected inverter cannot satisfy the requested sizing basis within the available catalogue. A qualified engineer must design and verify a suitable inverter arrangement.");
     if (dcAcRatio < 0.8) warnings.push("PV array is small compared to inverter size. Accept only if inverter is mainly for backup/surge loads.");
     if (dcAcRatio > 1.5) warnings.push("DC:AC ratio is high. Check inverter clipping and MPPT input limits.");
     if (!coldVocOk) warnings.push("Cold Voc exceeds inverter maximum DC voltage. Reduce panels per string immediately.");
@@ -1382,8 +1411,8 @@ function useSizing(project, loads) {
     // DC cable rated current advisory
     if (dcCableRatedA > 30) warnings.push(`DC string cable must be rated ≥ ${num(dcCableRatedA, 1)}A (1.25 × Isc per IEC 62548). Verify selected ${project.dcCableSizeMm2}mm² cable ampacity at operating temperature before procurement.`);
     // Cable ampacity advisory
-    if (!dcCableAmpacityOk) warnings.push(`DC cable ${project.dcCableSizeMm2}mm² advisory ampacity (${dcCableAdvisoryA}A) may be below design current (${num(dcCableRatedA, 1)}A). Increase cable size or perform full thermal derating calculation.`);
-    if (!acCableAmpacityOk) warnings.push(`AC cable ${project.acCableSizeMm2}mm² advisory ampacity (${acCableAdvisoryA}A) may be below design breaker current (${num(acBreakerDesignA, 1)}A). Increase cable size or perform full thermal derating calculation.`);
+    if (!dcCableAmpacityOk) warnings.push(dcCableAdvisoryA > 0 ? `DC cable ${project.dcCableSizeMm2}mm² advisory ampacity (${dcCableAdvisoryA}A) may be below design current (${num(dcCableRatedA, 1)}A). Increase cable size or perform full thermal derating calculation.` : `DC cable ${project.dcCableSizeMm2}mm² has no advisory ampacity entry. Engineer verification is required; this is not a passed check.`);
+    if (!acCableAmpacityOk) warnings.push(acCableAdvisoryA > 0 ? `AC cable ${project.acCableSizeMm2}mm² advisory ampacity (${acCableAdvisoryA}A) may be below design breaker current (${num(acBreakerDesignA, 1)}A). Increase cable size or perform full thermal derating calculation.` : `AC cable ${project.acCableSizeMm2}mm² has no advisory ampacity entry. Engineer verification is required; this is not a passed check.`);
 
     const sizingResult = {
       pr,
@@ -1459,6 +1488,7 @@ function useSizing(project, loads) {
       subtotal,
       vatAmount,
       totalCost,
+      investmentCost,
       quote,
       uncappedAnnualSavings,
       annualSavings,
@@ -1592,13 +1622,17 @@ function useSizing(project, loads) {
     sizingResult.loadInventoryBlocked = loadInventoryBlocked;
     sizingResult.quoteReady = !loadInventoryBlocked;
     sizingResult.quoteBlockedReason = quoteBlockedReason;
-    return loadInventoryBlocked ? applyLoadInventoryGate(sizingResult, quoteBlockedReason) : sizingResult;
-  }, [project, loads]);
+    if (!loadInventoryBlocked && (!inverterSizing.loadSupported || inverterSizing.catalogueExceeded)) {
+      sizingResult.quoteReady = false;
+      sizingResult.quoteBlockedReason = "Inverter engineering review required";
+    }
+    return gateTariffSizing(gateEquipmentSizing(project, loadInventoryBlocked ? applyLoadInventoryGate(sizingResult, quoteBlockedReason) : sizingResult), tariffModel);
+  }, [projectInput, loads, tariffToday()]);
 }
 
 /* UI Helper Components in Vanilla CSS */
 
-function Field({ label, value, onChange, type = "text", step = "any", suffix, min, max, help, emptyValue = 0, presets }) {
+function Field({ label, value, onChange, type = "text", step = "any", suffix, min, max, help, emptyValue = 0, presets, disabled = false }) {
   return (
     <div className="field-group">
       <span className="field-label">{label}</span>
@@ -1614,6 +1648,7 @@ function Field({ label, value, onChange, type = "text", step = "any", suffix, mi
             max={max}
             step={step}
             emptyValue={emptyValue}
+            disabled={disabled}
           />
         ) : (
           <input
@@ -1621,23 +1656,25 @@ function Field({ label, value, onChange, type = "text", step = "any", suffix, mi
             value={value}
             onChange={(e) => onChange(e.target.value)}
             className="field-input"
+            disabled={disabled}
           />
         )}
         {suffix && <span className="field-suffix">{suffix}</span>}
       </div>
-      {presets && presets.length > 0 && (
+      {!disabled && presets && presets.length > 0 && (
         <PresetChips options={presets} value={value} onSelect={onChange} />
       )}
       {help && <span className="field-help">{help}</span>}
+      {disabled && <span className="field-help">Model-linked input: edit in Asset library.</span>}
     </div>
   );
 }
 
-function SelectField({ label, value, onChange, options, help }) {
+function SelectField({ label, value, onChange, options, help, disabled = false }) {
   return (
     <div className="field-group">
       <span className="field-label">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="select-input">
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="select-input" disabled={disabled}>
         {options.map((o) => (
           <option key={o.value ?? o} value={o.value ?? o}>
             {o.label ?? o}
@@ -1687,19 +1724,13 @@ function Metric({ label, value, hint, danger, good }) {
 }
 
 function Sidebar({ active, setActive, project, sidebarOpen, setSidebarOpen, viewMode, setViewMode, hasActiveProject, onExitToStart, actorRole, enforceRoleAccess = false }) {
-  const isClient = viewMode === "client";
-  const isEngineer = viewMode === "engineer";
-  const isBank = viewMode === "bank"; // v11.7.1 — Bank Pilot Mode (simplified guided flow)
   const nav = (key) => { setActive(key); setSidebarOpen(false); };
-  const btn = (key, label) => (!enforceRoleAccess || isTabAllowedForRole(key, actorRole)) ? (
-    <button key={key} onClick={() => nav(key)} className={`nav-item ${active === key ? "active" : ""}`}>
-      {label}
-    </button>
-  ) : null;
+  const groups = getWorkspaceNavigation({ viewMode, project,
+    canAccess: (key) => !enforceRoleAccess || isTabAllowedForRole(key, actorRole) });
   return (
-    <aside className={`sidebar ${sidebarOpen ? "show" : ""}`}>
+    <aside id="workspace-sidebar" className={`sidebar ${sidebarOpen ? "show" : ""}`}>
       <div className="sidebar-logo-card">
-        <img src="/logo.png" alt="Voltflow" style={{ height: "44px", objectFit: "contain", marginBottom: "0.35rem", display: "block" }} />
+        <BrandLogo style={{ height: "56px", marginBottom: "0.35rem", display: "block" }} />
         <div className="logo-desc">Solarise Pro powered by Voltflow</div>
       </div>
       {/* v11.4.1 — active project chip + way back to the start screen */}
@@ -1710,20 +1741,18 @@ function Sidebar({ active, setActive, project, sidebarOpen, setSidebarOpen, view
             {project.client || "Untitled project"}
           </div>
           {project.isDemo && <div style={{ fontSize: "0.68rem", fontWeight: 800, color: "#c4b5fd", marginTop: "0.15rem" }}>🧪 DEMO DATA</div>}
-          <button onClick={onExitToStart}
-            style={{ marginTop: "0.5rem", background: "transparent", border: "none", color: "rgba(255,255,255,0.7)", fontSize: "0.72rem", fontWeight: 700, cursor: "pointer", padding: 0 }}>
-            ← Start screen
-          </button>
         </div>
       )}
+      {hasActiveProject && <button type="button" className="vfw-home-link" onClick={onExitToStart}>← Workspace home</button>}
       {/* v11.4 — view mode switches WHAT IS SHOWN only; nothing is recalculated
           and every tab stays reachable by returning to Engineer view. */}
       <div style={{ marginBottom: "1rem" }}>
         <div className="sidebar-section-label" style={{ marginTop: 0 }}>View mode</div>
         <div className="vf-viewmode-bar" role="group" aria-label="View mode">
-          {[["engineer", "⚙ Engineer"], ["client", "👤 Client"], ["technician", "🔧 Technician"], ["bank", "🏦 Bank"]].map(([mode, label]) => (
+          {[["engineer", "⚙ Engineer"], ["client", "👤 Client"], ["technician", "🔧 Technician"], ["bank", "🏦 Finance"]].map(([mode, label]) => (
             <button key={mode}
               className={`vf-viewmode-btn ${viewMode === mode ? "active" : ""}`}
+              aria-pressed={viewMode === mode}
               onClick={() => setViewMode(mode)}
               title={`${label.split(" ")[1]} view`}>
               {label}
@@ -1742,79 +1771,7 @@ function Sidebar({ active, setActive, project, sidebarOpen, setSidebarOpen, view
           </div>
         </nav>
       ) : (
-      <nav className="sidebar-nav">
-        {isBank && (<>
-          <div className="sidebar-section-label">Bank pilot</div>
-          {btn("bank-flow", "🏦 Bank Lead & Quote")}
-          {btn("field-dashboard", "Dashboard")}
-          {btn("proposal", "Proposal")}
-          {btn("storage", "Save / Load")}
-          <div style={{ marginTop: "1rem", fontSize: "0.7rem", color: "rgba(255,255,255,0.55)", lineHeight: 1.5, padding: "0 0.25rem" }}>
-            Bank Pilot Mode shows a simplified guided flow. Switch to Engineer view for full technical detail.
-          </div>
-        </>)}
-        {!isBank && (<>
-        <div className="sidebar-section-label">Main</div>
-        {!isClient && btn("studio", "🎨 Voltflow Studio")}
-        {btn("field-dashboard", "Dashboard")}
-        {btn("dashboard", "Sizing Overview")}
-        {isEngineer && btn("new-project", "New Project")}
-
-        {!isClient && <>
-          <div className="sidebar-section-label">Survey</div>
-          {btn("site-survey", "Site Survey")}
-          {btn("roof-shading", "Roof & Shading")}
-          {btn("roof-layout", "Roof Layout")}
-          {btn("electrical", "Electrical")}
-          {btn("site-photos", "Site Photos")}
-          {btn("safety-risks", "Safety & Risks")}
-        </>}
-
-        {isEngineer && <>
-          <div className="sidebar-section-label">Engineering</div>
-          {btn("project", "Project Setup")}
-          {btn("loads", "Load Assessment")}
-          {btn("energy-import", "Energy Data Import")}
-          {btn("generation", "PV + PR")}
-          {btn("battery", "Battery")}
-          {btn("inverter", "Inverter + Safety")}
-          {btn("eng-compliance", "Eng. Compliance")}
-          {(project.systemType === "Solar PV – Hybrid" || project.systemType === "Off-grid" || project.systemType === "Genset hybrid") && btn("system-options", "System Options")}
-          {btn("finance", "Financials + DSCR")}
-          {btn("carbon", "Carbon Credits")}
-        </>}
-
-        {!isClient && <div className="sidebar-section-label">Specialist Modules</div>}
-        {!isClient && btn("borehole", `Solar Borehole${project.borehole?.enabled ? " ●" : ""}`)}
-        {isEngineer && project.systemType === "Genset hybrid" && btn("genset", "Genset Hybrid")}
-        {isEngineer && project.systemType === "EV charging" && btn("ev", "EV Charging")}
-        {isEngineer && project.systemType === "Mini-grid" && btn("minigrid", "Mini-Grid")}
-
-        <div className="sidebar-section-label">{isClient ? "Your project" : "Delivery"}</div>
-        {btn("delivery", isClient ? "Project Progress" : "Project Delivery")}
-
-        {!isClient && <div className="sidebar-section-label">Governance</div>}
-        {!isClient && btn("compliance", "Compliance")}
-        {!isClient && btn("evidence", "Evidence & Audit")}
-
-        {!isClient && <div className="sidebar-section-label">Output</div>}
-        {!isClient && btn("installer-sim", "Installer Simulation")}
-        {isEngineer && btn("accessories", "Accessories / BOS")}
-        {isEngineer && btn("assets-lib", "Asset Library")}
-        {isEngineer && btn("boq", "BoQ")}
-        {btn("proposal", "Proposal")}
-        {!isClient && btn("readiness", "Project Readiness")}
-        {!isClient && btn("storage", "Save / Load")}
-        {btn("assistant", "AI Assistant")}
-        {!isClient && btn("feedback", "Send Feedback")}
-
-        {isClient && (
-          <div style={{ marginTop: "1rem", fontSize: "0.7rem", color: "rgba(255,255,255,0.55)", lineHeight: 1.5, padding: "0 0.25rem" }}>
-            Client view shows a simplified summary. Switch to Engineer view for full technical detail.
-          </div>
-        )}
-        </>)}
-      </nav>
+        <WorkspaceNavigation groups={groups} active={active} onNavigate={nav} />
       )}
       <div className="sidebar-footer">
         {APP_VERSION} · {TRUST_FOUNDATION_VERSION} · Solar EPC Platform · Kenya
@@ -2210,7 +2167,7 @@ function Dashboard({ project, sizing, setActive, readiness, advisory, governance
 
       {/* Roof fit status */}
       {panelLayout && panelLayout.estimatedPanelsThatFit > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "0.75rem", marginBottom: "0.5rem" }}>
+        <div className="grid-cols-4" style={{ gap: "0.75rem", marginBottom: "0.5rem" }}>
           <Metric label="Roof Fit Status"
             value={panelLayout.roofFitStatus?.split("—")[0]?.trim() || "—"}
             good={panelLayout.roofFitStatus?.startsWith("Fits comfortably")}
@@ -2298,14 +2255,14 @@ function ProjectInputs({ project, setProject, setActive }) {
       </Card>
       <Card title="Battery & commercial assumptions" subtitle="Chemistry selection replaces raw DoD guesswork.">
         <div className="form-grid">
-          <SelectField label="Battery Chemistry" value={project.batteryChemistry} onChange={applyChemistry} options={Object.entries(batteryChemistries).map(([value, data]) => ({ value, label: data.label }))} />
+          <SelectField disabled={!!project.equipmentSelection?.enabled} label="Battery Chemistry" value={project.batteryChemistry} onChange={applyChemistry} options={Object.entries(batteryChemistries).map(([value, data]) => ({ value, label: data.label }))} />
           <Field label="Depth of Discharge" type="number" value={project.dod} onChange={(v) => update("dod", clamp(v, 0.1, 1))} suffix="0-1" />
           <Field label="Battery Efficiency" type="number" value={project.batteryEfficiency} onChange={(v) => update("batteryEfficiency", clamp(v, 0.5, 0.99))} suffix="0-1" />
-          <Field label="Battery Module Size" type="number" value={project.batteryModuleKwh} onChange={(v) => update("batteryModuleKwh", Math.max(v, 0.1))} suffix="kWh" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Battery Module Size" type="number" value={project.batteryModuleKwh} onChange={(v) => update("batteryModuleKwh", Math.max(v, 0.1))} suffix="kWh" />
           <Field label="Backup Hours" type="number" value={project.backupHours} onChange={(v) => update("backupHours", clamp(v, 1, 72))} suffix="hrs" />
           <Field label="Off-grid Autonomy" type="number" value={project.autonomyDays} onChange={(v) => update("autonomyDays", clamp(v, 0.5, 7))} suffix="days" />
-          <Field label="Panel Wattage" type="number" value={project.panelW} onChange={(v) => update("panelW", v)} min={200} max={800} suffix="W" presets={[450, 550, 585, 600, 610]} />
-          <Field label="Panel Unit Cost" type="number" value={project.panelCost} onChange={(v) => update("panelCost", Math.max(v, 0))} suffix="KES" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Panel Wattage" type="number" value={project.panelW} onChange={(v) => update("panelW", v)} min={200} max={800} suffix="W" presets={[450, 550, 585, 600, 610]} />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Panel Unit Cost" type="number" value={project.panelCost} onChange={(v) => update("panelCost", Math.max(v, 0))} suffix="KES" />
         </div>
         <div className="carbon-info" style={{ marginTop: "1.5rem" }}>
           Selected chemistry: <b>{batteryChemistries[project.batteryChemistry].label}</b> · Cycle life: <b>{nf.format(batteryChemistries[project.batteryChemistry].cycleLife)}</b> · Indicative replacement year: <b>{batteryChemistries[project.batteryChemistry].replacementYear}</b>.
@@ -2714,6 +2671,7 @@ function EnergyDataImport({ project, setProject, draftLoadItemsV2, setDraftLoadI
 }
 
 function LoadAssessment({
+  project,
   loadAssessmentMode, setLoadAssessmentMode,
   loadItemsV2,            // committed — used by useSizing via toLegacyLoads (read-only here)
   draftLoadItemsV2,       // working copy — all edits go here
@@ -2785,6 +2743,7 @@ function LoadAssessment({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {project?.systemType !== "EV charging" && project?.systemType !== "Mini-grid" && <ResidentialEvPlanner onPrepareLoad={(row) => { setDraftLoadItemsV2((current) => [...current.filter((entry) => entry.id !== row.id), row]); setHasUnappliedLoadChanges(true); }} />}
       <Card title="Sizing basis" subtitle="How this project's loads are established. Blueprint and future-expansion projects carry extra assumptions into the proposal.">
         <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
           {[["existing_site", "🏠 Existing site"], ["blueprint_new_build", "📐 Blueprint / new build"], ["future_expansion", "📈 Future expansion"]].map(([v, lbl]) => (
@@ -3396,7 +3355,7 @@ function Generation({ project, setProject, sizing }) {
       <Card title="PR calculator" subtitle="Loss factors multiply to produce a defensible Performance Ratio.">
         <div className="form-grid">
           <Field label="Cell Temp" type="number" value={project.cellTemp} onChange={(v) => update("cellTemp", clamp(v, 25, 75))} suffix="°C" />
-          <Field label="Pmax Temp Coeff" type="number" value={project.temperatureCoeffPmax} onChange={(v) => update("temperatureCoeffPmax", v)} suffix="/°C" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Pmax Temp Coeff" type="number" value={project.temperatureCoeffPmax} onChange={(v) => update("temperatureCoeffPmax", v)} suffix="/°C" />
           <Field label="Soiling Loss" type="number" value={project.soilingLoss} onChange={(v) => update("soilingLoss", clamp(v, 0, 0.25))} suffix="0-1" />
           <Field label="Shading Loss" type="number" value={project.shadingLoss} onChange={(v) => update("shadingLoss", clamp(v, 0, 0.4))} suffix="0-1" />
           <Field label="LID Loss" type="number" value={project.lidLoss} onChange={(v) => update("lidLoss", clamp(v, 0, 0.08))} suffix="0-1" />
@@ -3450,9 +3409,21 @@ function Generation({ project, setProject, sizing }) {
 }
 
 function Battery({ project, setProject, sizing, batteryHardware, night, highlightId }) {
+  if (project.equipmentSelection?.enabled) return <div>
+    <Card title="Documented battery bank" subtitle="Published usable energy; project efficiency is applied once. Quantities are explicitly selected, not silently increased.">
+      <div className="form-grid">
+        <Metric label="Battery units" value={sizing.batteryModules} />
+        <Metric label="Published usable energy" value={`${num(sizing.batteryKwh, 2)} kWh`} />
+        <Metric label="After project efficiency" value={`${num(sizing.usableBatteryKwh, 2)} kWh`} />
+        <Metric label="Bank continuous DC power cap" value={`${num(sizing.equipment?.limits?.powerKw || 0, 2)} kW`} />
+        <Metric label="Estimated autonomy" value={`${num(sizing.autonomyHours, 1)} h`} />
+      </div>
+    </Card>
+    <EquipmentMatchingPanel project={project} setProject={setProject} sizing={sizing} />
+  </div>;
   const chemistry = batteryChemistries[project.batteryChemistry];
   const selection = normalizeBatterySelection(project.batterySelection);
-  const batteryAssets = listAssets("batteries");
+  const batteryAssets = listAssets("batteries").filter((asset) => !asset.documented);
   const setSelectionMode = (selection_mode) => setProject((current) => ({
     ...current,
     batterySelection: {
@@ -3606,12 +3577,12 @@ function InverterCoherenceCard({ sizing, project, setProject, navigateToTab }) {
       <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
         <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.78rem", fontWeight: 600, color: "var(--text-medium)" }}>
           Inverter sizing basis
-          <select className="input" value={project.inverterSizingBasis} onChange={(e) => update("inverterSizingBasis", e.target.value)}>
+          <select className="input" disabled={!!project.equipmentSelection?.enabled} value={project.inverterSizingBasis} onChange={(e) => update("inverterSizingBasis", e.target.value)}>
             {INVERTER_BASIS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
         {project.inverterSizingBasis === "manual_review" ? (
-          <Field label="Manual inverter (kW)" type="number" value={project.manualInverterKw} onChange={(v) => update("manualInverterKw", Math.max(0, v))} suffix="kW" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Manual inverter (kW)" type="number" value={project.manualInverterKw} onChange={(v) => update("manualInverterKw", Math.max(0, v))} suffix="kW" />
         ) : <div />}
         <SmartNumberField label="Running diversity factor" value={project.runningLoadDiversityFactor} onCommit={(v) => update("runningLoadDiversityFactor", v)} min={0.1} max={1} emptyValue={0.75} />
         <SmartNumberField label="Surge diversity factor" value={project.surgeDiversityFactor} onCommit={(v) => update("surgeDiversityFactor", v)} min={0.1} max={1} emptyValue={0.65} />
@@ -3619,7 +3590,7 @@ function InverterCoherenceCard({ sizing, project, setProject, navigateToTab }) {
       <div style={{ fontSize: "0.74rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
         Diversity factors account for the fact that not all connected loads run at the same time. Final design must confirm actual simultaneity.
         {project.inverterSizingBasis === "manual_review" && " Manual selection requires an engineering note."}
-        {inv.basis === "pv_ratio_led" && !inv.loadSupported && " ⚠ PV-ratio-led inverter may not support the peak/surge demand — confirm."}
+        {(!inv.loadSupported || inv.catalogueExceeded) && " ⚠ Selected inverter does not satisfy the requested sizing basis. Qualified engineering design is required."}
       </div>
 
       {/* Low DC:AC correction card */}
@@ -3675,19 +3646,19 @@ function Inverter({ project, setProject, sizing, highlightId, navigateToTab }) {
       </Card>
       <Card title="String, cable and altitude inputs" subtitle="Cold Voc follows the IEC 62548 principle; cable drop follows copper conductor resistance. Genset derating is altitude-adjusted.">
         <div className="form-grid">
-          <Field label="Module Voc STC" type="number" value={project.moduleVoc} onChange={(v) => update("moduleVoc", v)} suffix="V" />
-          <Field label="Module Vmp" type="number" value={project.moduleVmp} onChange={(v) => update("moduleVmp", v)} suffix="V" />
-          <Field label="Module Imp" type="number" value={project.moduleImp} onChange={(v) => update("moduleImp", v)} suffix="A" />
-          <Field label="Voc Temp Coeff" type="number" value={project.tempCoeffVoc} onChange={(v) => update("tempCoeffVoc", v)} suffix="/°C" />
-          <Field label="Min Site Temp" type="number" value={project.minTemp} onChange={(v) => update("minTemp", v)} suffix="°C" />
-          <Field label="Inverter Max DC V" type="number" value={project.inverterMaxDcV} onChange={(v) => update("inverterMaxDcV", v)} suffix="V" presets={[500, 600, 1000, 1100, 1500]} />
-          <Field label="Panels per String (requested)" type="number" value={project.panelsPerString} onChange={(v) => update("panelsPerString", Math.max(1, Math.floor(v)))} />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Module Voc STC" type="number" value={project.moduleVoc} onChange={(v) => update("moduleVoc", v)} suffix="V" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Module Vmp" type="number" value={project.moduleVmp} onChange={(v) => update("moduleVmp", v)} suffix="V" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Module Imp" type="number" value={project.moduleImp} onChange={(v) => update("moduleImp", v)} suffix="A" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Voc Temp Coeff" type="number" value={project.tempCoeffVoc} onChange={(v) => update("tempCoeffVoc", v)} suffix="/°C" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Min Site Temp" type="number" value={project.minTemp} onChange={(v) => update("minTemp", v)} suffix="°C" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Inverter Max DC V" type="number" value={project.inverterMaxDcV} onChange={(v) => update("inverterMaxDcV", v)} suffix="V" presets={[500, 600, 1000, 1100, 1500]} />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Panels per String (requested)" type="number" value={project.panelsPerString} onChange={(v) => update("panelsPerString", Math.max(1, Math.floor(v)))} />
           <Field label="DC Cable Length" type="number" value={project.dcCableLengthM} onChange={(v) => update("dcCableLengthM", Math.max(v, 0))} suffix="m" />
           <Field label="DC Cable Size" type="number" value={project.dcCableSizeMm2} onChange={(v) => update("dcCableSizeMm2", v)} min={1} suffix="mm²" presets={[2.5, 4, 6, 10, 16, 25, 35, 50]} />
           <Field label="AC Cable Length" type="number" value={project.acCableLengthM} onChange={(v) => update("acCableLengthM", Math.max(v, 0))} suffix="m" />
           <Field label="AC Cable Size" type="number" value={project.acCableSizeMm2} onChange={(v) => update("acCableSizeMm2", v)} min={1} suffix="mm²" presets={[2.5, 4, 6, 10, 16, 25, 35, 50]} />
           <Field label="AC Voltage" type="number" value={project.acVoltage} onChange={(v) => update("acVoltage", v)} min={1} suffix="V" presets={[230, 400, 415]} />
-          <Field label="Site Altitude" type="number" value={project.altitude} onChange={(v) => update("altitude", Math.max(v, 0))} suffix="m" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Site Altitude" type="number" value={project.altitude} onChange={(v) => update("altitude", Math.max(v, 0))} suffix="m" />
           <Field label="Genset Rated Capacity" type="number" value={project.gensetRatedKva} onChange={(v) => update("gensetRatedKva", Math.max(v, 0))} suffix="kVA" />
         </div>
         <div className="carbon-info" style={{ marginTop: "1rem" }}>
@@ -3702,20 +3673,20 @@ function Finance({ project, setProject, sizing }) {
   const update = (k, v) => setProject((p) => ({ ...p, [k]: v }));
   const carbonRevenueY1 = project.carbonInCashflow ? sizing.carbonValue : 0;
   const quote = sizing.quote || { category_totals: {}, discount: 0, subtotal_net: 0, tax: 0, total_gross: 0 };
-  const selectedDesignStale = !!project.selectedDesignOption
-    && project.selectedDesignOption.inputs_hash !== project.designRevision?.inputs_hash;
+  const tariffHeld = sizing.tariffModel?.enabled && !sizing.tariffModel.ready;
   return (
-    <div className="grid-cols-2">
-      <Card title="Financial summary" subtitle="Savings now use annual kWh × tariff × self-consumption, not monthly bill × coverage.">
+    <div className="grid-cols-2 finance-workspace">
+      <ElectricityTariffPanel project={project} setProject={setProject} sizing={sizing} />
+      <Card title="Financial summary" subtitle={project.electricityTariff?.enabled ? "Savings use the reviewed bill before solar minus retained grid costs after solar. Future years remain forecasts." : "Savings now use annual kWh × tariff × self-consumption, not monthly bill × coverage."}>
         <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
           <Metric label="Total System Cost" value={money(sizing.totalCost)} />
-          <Metric label="P50 Annual Savings" value={money(sizing.annualSavings)} />
-          <Metric label="P90 Annual Savings" value={money(sizing.annualSavingsP90)} />
+          <Metric label="P50 Annual Savings" value={tariffHeld ? "Review tariff" : money(sizing.annualSavings)} />
+          <Metric label="P90 Annual Savings" value={tariffHeld ? "Review tariff" : money(sizing.annualSavingsP90)} />
           <Metric label="Carbon Revenue Y1" value={money(carbonRevenueY1)} hint={project.carbonInCashflow ? `${num(sizing.carbonOffset, 2)} tCO₂/year` : "Excluded unless explicitly enabled"} />
-          <Metric label="P50 Payback" value={`${num(sizing.payback, 2)} yrs`} />
-          <Metric label="P90 Payback" value={`${num(sizing.paybackP90, 2)} yrs`} />
-          <Metric label="Project IRR" value={pct(sizing.irrLife)} />
-          <Metric label="Equity IRR" value={project.debtShare > 0 ? pct(sizing.equityIrr) : "Equity-only case"} />
+          <Metric label="P50 Payback" value={tariffHeld ? "Review tariff" : Number.isFinite(sizing.payback) ? `${num(sizing.payback, 2)} yrs` : "Not reached"} />
+          <Metric label="P90 Payback" value={tariffHeld ? "Review tariff" : Number.isFinite(sizing.paybackP90) ? `${num(sizing.paybackP90, 2)} yrs` : "Not reached"} />
+          <Metric label="Project IRR" value={Number.isFinite(sizing.irrLife) ? pct(sizing.irrLife) : "Not available"} />
+          <Metric label="Equity IRR" value={project.debtShare > 0 ? Number.isFinite(sizing.equityIrr) ? pct(sizing.equityIrr) : "Not available" : "Equity-only case"} />
           <Metric label="LCOE P50/P90" value={`${num(sizing.lcoe, 2)} / ${num(sizing.lcoeP90, 2)}`} hint="KES/kWh - canonical feasibility basis" />
           <Metric label="Cashflow Break-even" value={sizing.breakEvenYear ? `Year ${sizing.breakEvenYear}` : "Beyond project life"} hint="Actual zero-crossing from cashflow table" good={!!sizing.breakEvenYear} />
           <Metric label="Monte Carlo Payback" value={`${num(sizing.paybackP10, 1)} / ${num(sizing.paybackP50MonteCarlo, 1)} / ${num(sizing.paybackP90MonteCarlo, 1)}`} hint="P10 / P50 / P90 years" />
@@ -3723,7 +3694,7 @@ function Finance({ project, setProject, sizing }) {
       </Card>
       <Card title="Bankability / DSCR model" subtitle="P90 net benefit is used for debt service cover.">
         <div className="form-grid">
-          <Field label="Grid Tariff" type="number" value={project.gridTariff} onChange={(v) => update("gridTariff", Math.max(v, 0))} suffix="KES/kWh" />
+          <Field label="Grid Tariff" type="number" value={project.gridTariff} onChange={(v) => update("gridTariff", Math.max(v, 0))} suffix="KES/kWh" disabled={project.electricityTariff?.enabled} help={project.electricityTariff?.enabled ? "Flat rate is inactive while the reviewed tariff is applied." : "Flat-rate planning estimate; use the reviewed bill calculator above for itemised charges."} />
           <Field label="Tariff Escalation" type="number" value={project.tariffEscalation} onChange={(v) => update("tariffEscalation", clamp(v, 0, 0.3))} suffix="0-1" />
           <Field label="Self Consumption" type="number" value={project.selfConsumptionRate} onChange={(v) => update("selfConsumptionRate", clamp(v, 0, 1))} suffix="0-1" />
           <Field label="P90 Factor" type="number" value={project.p90Factor} onChange={(v) => update("p90Factor", clamp(v, 0.75, 1))} suffix="0-1" />
@@ -3734,7 +3705,7 @@ function Finance({ project, setProject, sizing }) {
           <Field label="Degradation" type="number" value={project.degradation} onChange={(v) => update("degradation", clamp(v, 0, 0.03))} suffix="0-1" />
           <Field label="Carbon Price Escalation" type="number" value={project.carbonEscalation} onChange={(v) => update("carbonEscalation", clamp(v, 0, 0.3))} suffix="0-1" />
           <Field label="Inflation Rate" type="number" value={project.inflationRate} onChange={(v) => update("inflationRate", clamp(v, 0, 0.3))} suffix="0-1" />
-          <CheckField label="Cap savings to current bill" checked={project.capSavingsToBill} onChange={(v) => update("capSavingsToBill", v)} help="Keep enabled for normal client proposals. Disable only for export/feed-in or special tariff models." />
+          {project.electricityTariff?.enabled ? <p className="tariff-help">Reviewed tariff mode always caps avoided imports to generation, captured loads and recorded bill kWh. The legacy flat-rate bill cap is inactive; export credits are not modelled.</p> : <CheckField label="Cap savings to current bill" checked={project.capSavingsToBill} onChange={(v) => update("capSavingsToBill", v)} help="Keep enabled for normal client proposals. Disable only for export/feed-in or special tariff models." />}
         </div>
         <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", marginTop: "1.5rem" }}>
           <Metric label="Debt Principal" value={money(sizing.debtPrincipal)} />
@@ -3832,11 +3803,11 @@ const ACCESSORY_CATEGORY_LABELS = {
 };
 
 function BOQ({ project, sizing, accessoriesBoQ, borehole, setActive }) {
-  if (sizing.loadInventoryBlocked || sizing.loadInventoryPending || sizing.loadInventoryInvalid) {
+  if (sizing.quoteReady === false || sizing.loadInventoryBlocked || sizing.loadInventoryPending || sizing.loadInventoryInvalid) {
     return (
-      <Card title="Dynamic Bill of Quantities" subtitle="Pricing is held until loads are valid and committed.">
+      <Card title="Dynamic Bill of Quantities" subtitle="Pricing is held until load and equipment checks are complete.">
         <WarningPanel tone="warning" title={sizing.quoteBlockedReason || LOAD_PENDING_LABEL}>
-          Complete the load inventory and click Update Sizing before generating BoQ, investment or procurement values.
+          Resolve the stated issue in Load Assessment or Asset library before generating procurement values.
         </WarningPanel>
       </Card>
     );
@@ -3848,10 +3819,10 @@ function BOQ({ project, sizing, accessoriesBoQ, borehole, setActive }) {
   const transportAllowance = Math.round((Number(project.epcCost) || 0) * 0.2);
   const markupAllowance = Math.max(0, (Number(project.epcCost) || 0) - labourAllowance - transportAllowance);
   const rows = [
-    ["1.1", "PV Panels", sizing.panels, "panels", project.panelCost, sizing.pvCost],
+    ["1.1", sizing.equipment?.models?.panel || "PV Panels", sizing.panels, "panels", project.panelCost, sizing.pvCost],
     ["1.2", "Mounting rails, clamps & hardware", sizing.panels, "sets", project.mountingPerPanel, sizing.mountingCost],
-    ["2.1", "Hybrid/Grid-tied inverter", 1, "unit", sizing.inverterCost, sizing.inverterCost],
-    ["3.1", `${batteryChemistries[project.batteryChemistry].label} battery modules`, sizing.batteryModules, "units", project.batteryModuleCost, sizing.batteryModules * project.batteryModuleCost],
+    ["2.1", sizing.equipment?.models?.inverter || "Hybrid/Grid-tied inverter", 1, "unit", sizing.inverterCost, sizing.inverterCost],
+    ["3.1", sizing.equipment?.models?.battery || `${batteryChemistries[project.batteryChemistry].label} battery modules`, sizing.batteryModules, "units", project.batteryModuleCost, sizing.batteryModules * project.batteryModuleCost],
     ["3.2", "Battery rack, BMS accessories & interconnects", 1, "lot", 16000, 16000],
     ["4.1", "DC/AC cabling, breakers, SPDs, earthing", 1, "lot", project.cablingProtectionCost, project.cablingProtectionCost],
     ["5.1", "IoT monitoring system", 1, "lot", project.monitoringCost, project.monitoringCost],
@@ -4200,6 +4171,48 @@ function CloudReviewWorkflow({ platform, organisationId, projectId, actorRole, o
   );
 }
 
+function CloudVersionHistory({ platform, organisationId, projectId, showToast }) {
+  const [versions, setVersions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    platform.projects.listVersions({ organisationId, projectId })
+      .then((rows) => { if (active) setVersions(Array.isArray(rows) ? rows : []); })
+      .catch((error) => { if (active) showToast?.(`Could not load version history: ${error?.message || "unknown error"}`, "error"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [platform, organisationId, projectId, reloadKey]);
+  return (
+    <Card title="Proposal version history" subtitle="Immutable records of every proposal version — saved in Zoho and tamper-proof.">
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.5rem" }}>
+        <button className="btn btn-secondary" style={{ fontSize: "0.75rem", padding: "0.3rem 0.6rem" }} onClick={() => setReloadKey((k) => k + 1)}>↻ Refresh</button>
+      </div>
+      {loading ? (
+        <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Loading version history…</div>
+      ) : versions.length === 0 ? (
+        <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>No versions yet. Preparing a proposal records an immutable version here.</div>
+      ) : (
+        <div style={{ display: "grid", gap: "0.5rem" }}>
+          {versions.map((v) => (
+            <div key={v.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", padding: "0.5rem 0.65rem", border: "1px solid var(--border)", borderRadius: "0.5rem" }}>
+              <div style={{ display: "grid", gap: "0.15rem", minWidth: 0 }}>
+                <span style={{ fontWeight: 600, fontSize: "0.85rem" }}>Version {v.versionNo} · {String(v.lifecycle || "").replace(/_/g, " ")}</span>
+                <span style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
+                  {v.issuedAt ? `Issued ${formatAuditTime(v.issuedAt)}` : (v.createdAt ? `Prepared ${formatAuditTime(v.createdAt)}` : "")}
+                </span>
+                {v.snapshotHash && <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(v.snapshotHash)}</span>}
+              </div>
+              <StatusPill tone={v.lifecycle === "issued" ? "success" : "info"}>{v.immutable ? "🔒 locked" : String(v.lifecycle || "")}</StatusPill>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function Proposal({ project, setProject, sizing, loadItemsV2, showToast, survey, readiness, projectReadiness, navigateToTab, advisory, panelLayout, tiltGuidance, roofGeometry, simulation, simWarnings, stringPlan, loadSummary, loadWarnings, dataLoggerRecommendation, accessoriesBoQ, borehole, viewMode, billLoadReconciliation, onPrepareVersion, cloudEnabled = false, platform, activeMembership, actorRole, cloudProjectId }) {
   const clientExp = advisory?.clientFriendlySummary;
   const proposalViewMode = normalizeViewMode(viewMode);
@@ -4208,12 +4221,14 @@ function Proposal({ project, setProject, sizing, loadItemsV2, showToast, survey,
   const isClientLikeView = proposalViewMode === "client" || proposalViewMode === "bank";
   const canShowInternalProposal = isEngineerView;
   const canShowCommercialProposal = !isTechnicianView;
-  const loadQuoteBlocked = !!sizing.loadInventoryBlocked || !!sizing.loadInventoryPending || !!sizing.loadInventoryInvalid;
+  const loadQuoteBlocked = sizing.quoteReady === false || !!sizing.loadInventoryBlocked || !!sizing.loadInventoryPending || !!sizing.loadInventoryInvalid;
   const proposalBlockedLabel = sizing.quoteBlockedReason || LOAD_PENDING_LABEL;
-  const proposalBlockedHint = "Add committed loads and click Update Sizing before pricing.";
+  const proposalBlockedHint = sizing.equipment?.enabled && !sizing.equipment.quoteReady ? "Resolve equipment matching in Asset library before exporting a commercial proposal." : sizing.tariffModel?.enabled && !sizing.tariffModel.ready ? "Review and apply the bill and tariff inputs in Financials + DSCR before exporting." : "Add committed loads and click Update Sizing before pricing.";
   const visibleReportModes = isEngineerView ? REPORT_MODES : isTechnicianView ? ["technician"] : ["client"];
   const billLoadMessage = billLoadClientMessage(billLoadReconciliation);
   const quote = sizing.quote || { category_totals: {}, discount: 0, subtotal_net: 0, tax: 0, total_gross: 0 };
+  const selectedDesignStale = !!project.selectedDesignOption
+    && project.selectedDesignOption.inputs_hash !== project.designRevision?.inputs_hash;
   const inventoryWarnings = normalizeAssetSelections(project.assetSelections)
     .map((selection) => getCommercialAvailability(getAsset(selection.assetId) || {}, (project.inventoryLinks || {})[selection.assetId]))
     .filter((availability) => availability.state !== "AVAILABLE");
@@ -4307,8 +4322,10 @@ Assumptions: feasibility estimate using the recorded bill, tariff and site profi
 Subject to final site survey, equipment availability, and engineering approval.`;
 
   const copy = async () => {
+    if (loadQuoteBlocked) { showToast(proposalBlockedLabel, "error"); return; }
     try {
-      await navigator.clipboard.writeText(proposalText);
+      const equipmentText = sizing.equipment?.enabled && !loadQuoteBlocked ? `\n\nDocumented equipment matching: ${sizing.equipment.status}\nPV: ${sizing.equipment.models.panel}\nInverter: ${sizing.equipment.models.inverter}\nBattery: ${sizing.batteryModules} x ${sizing.equipment.models.battery}\nPrice basis: ${sizing.equipment.commercialBasis === "SUPPLIER_QUOTE" ? `Supplier reference ${project.equipmentSelection.priceReference}` : "Planning estimate, not a supplier offer"}\nSource set: ${sizing.equipment.catalogueVersion}\n${sizing.equipment.scope}` : "";
+      await navigator.clipboard.writeText(proposalText + equipmentText);
       showToast("Proposal copied to clipboard.");
     } catch {
       showToast("Failed to copy proposal text.", "error");
@@ -4433,12 +4450,17 @@ Subject to final site survey, equipment availability, and engineering approval.`
             <span className="meta-val">{project.preparedBy}</span>
           </div>
         </div>
+        {sizing.equipment?.enabled && <div className="equipment-notice" style={{ marginTop: "1rem" }}>
+          <strong>Equipment matching: {sizing.equipment.status}</strong>
+          <p>{sizing.equipment.models.panel || "PV module unverified"} · {sizing.equipment.models.inverter || "Inverter unverified"} · {sizing.batteryModules} × {sizing.equipment.models.battery || "Battery unverified"}</p>
+          <p>{sizing.equipment.commercialBasis === "SUPPLIER_QUOTE" ? `Supplier quote reference: ${project.equipmentSelection.priceReference || "missing"}` : "Prices are planning estimates, not a supplier offer."} {sizing.equipment.scope}</p>
+        </div>}
         {canShowCommercialProposal && billLoadReconciliation && (
           <div className="grid-cols-2" style={{ marginTop: "1rem" }}>
             <Metric
               label="Captured load coverage"
               value={Number.isFinite(billLoadReconciliation.capturedLoadCoveragePct) ? pct(billLoadReconciliation.capturedLoadCoveragePct) : "Pending reconciliation"}
-              hint="Itemized kWh divided by bill-implied kWh"
+              hint={billLoadReconciliation?.energyBasis === "recorded_bill_kwh" ? "Itemized kWh divided by recorded bill kWh" : "Itemized kWh divided by bill-implied kWh"}
             />
             <Metric
               label="Savings vs referenced bill"
@@ -4449,9 +4471,12 @@ Subject to final site survey, equipment availability, and engineering approval.`
         )}
         {loadQuoteBlocked && (
           <WarningPanel tone="warning" title={proposalBlockedLabel}>
-            This proposal is on hold. Complete the committed load inventory before showing PV, battery, inverter, BoQ, investment, savings or financing figures.
+            This proposal is on hold. {proposalBlockedHint}
           </WarningPanel>
         )}
+        {canShowCommercialProposal && sizing.tariffSummary && <WarningPanel tone="info" title="Reviewed tariff savings forecast">
+          {sizing.tariffSummary.category} · {sizing.tariffSummary.billingMonth} · reference bill {money(sizing.tariffSummary.beforeKes)}, after-solar estimate {money(sizing.tariffSummary.afterKes)}. Fixed and demand charges are retained. {sizing.tariffSummary.assumption} Recorded review only, not utility certification.
+        </WarningPanel>}
         <div className="grid-cols-4" style={{ marginTop: "2rem" }}>
           <Metric label="PV SIZE" value={loadQuoteBlocked ? proposalBlockedLabel : `${num(sizing.actualKwp, 1)} kWp`} hint={loadQuoteBlocked ? proposalBlockedHint : `${sizing.panels} panels`} />
           <Metric label="BATTERY CAPACITY" value={loadQuoteBlocked ? proposalBlockedLabel : `${num(sizing.batteryKwh, 1)} kWh`} hint={loadQuoteBlocked ? proposalBlockedHint : batteryChemistries[project.batteryChemistry].label} />
@@ -4577,7 +4602,7 @@ Subject to final site survey, equipment availability, and engineering approval.`
           </div>
         )}
         {canShowInternalProposal && <div style={{ marginTop:"1rem", padding:"0.85rem 1rem", background:"#f0fdf4", border:"1px solid #86efac", borderRadius:"0.5rem", fontSize:"0.82rem", color:"#166534", lineHeight:1.6 }}>
-          <b>Engineering compliance summary:</b> Cold Voc {sizing.coldVocOk ? "✅ OK" : "❌ FAIL"} | DC drop {pct(sizing.dcDropPct)} {sizing.dcDropPct <= 0.015 ? "✅" : "⚠️"} | AC drop {pct(sizing.acDropPct)} {sizing.acDropPct <= 0.03 ? "✅" : "⚠️"} | BMS discharge {sizing.batteryInputA <= sizing.bmsMaxDischargeA ? "✅ OK" : "⚠️ Exceeds"} | DC cable {sizing.dcCableAmpacityOk ? "✅" : "⚠️"} | AC cable {sizing.acCableAmpacityOk ? "✅" : "⚠️"} | Earthing {survey?.earthingAvailable ? "✅ Confirmed" : "⚠️ Not confirmed"}
+          <b>Engineering compliance summary:</b> Cold Voc {sizing.coldVocOk ? "✅ OK" : "❌ FAIL"} | DC drop {pct(sizing.dcDropPct)} {sizing.dcDropPct <= 0.015 ? "✅" : "⚠️"} | AC drop {pct(sizing.acDropPct)} {sizing.acDropPct <= 0.03 ? "✅" : "⚠️"} | BMS discharge {sizing.batteryInputA <= sizing.bmsMaxDischargeA ? "✅ OK" : "⚠️ Exceeds"} | DC cable {sizing.dcCableAmpacityOk ? "✅" : "⚠️"} | AC cable {sizing.acCableAmpacityOk ? "✅" : "⚠️"} | Earthing {withSurveyAssumption("earthingAvailable", survey?.earthingAvailable ? "Available" : "Not confirmed", survey)}
         </div>}
         <div style={{ marginTop:"0.75rem", padding:"0.75rem 1rem", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:"0.5rem", fontSize:"0.78rem", color:"#64748b", lineHeight:1.6 }}>
           <b>Disclaimers:</b> (1) <b>Engineering:</b> Final cable ampacity, protection coordination, earthing/bonding, SPD selection, grid interconnection settings, and commissioning must be verified by a qualified licensed electrical engineer. (2) <b>Financial:</b> LCOE and payback are feasibility estimates. Use confirmed supplier quotations, tax treatment, and financing terms for investment decisions. (3) <b>Carbon:</b> Carbon revenue is indicative only and excluded from base cashflow unless explicitly enabled. Formal claims require third-party MRV validation.
@@ -4676,7 +4701,7 @@ Subject to final site survey, equipment availability, and engineering approval.`
               ["Wiring", survey.wiringCondition],
               ["Shading", survey.shadingSources.length === 0 || survey.shadingSources.includes("None") ? "None" : survey.shadingSources.join(", ")],
               ["Site Notes", survey.siteNotes || "—"],
-              ["Photos", `${Object.values(survey.photos).filter(Boolean).length} of 10 captured`],
+              ["Photos", `${countSitePhotos(survey.photos)} of 10 captured`],
               ["Engineer Recommendation", survey.engineerRecommendation || "—"],
             ].filter(([, v]) => v).map(([k, v]) => (
               <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--border-light)", fontSize: "12.5px" }}>
@@ -4732,7 +4757,7 @@ Subject to final site survey, equipment availability, and engineering approval.`
             {[
               ["Roof Fit Status", panelLayout?.roofFitStatus?.split("—")[0]?.trim()],
               ["Panels Required", panelLayout?.requiredPanels ? `${panelLayout.requiredPanels}` : undefined],
-              ["Estimated Panels Fitted", panelLayout?.estimatedPanelsThatFit ? `${panelLayout.estimatedPanelsThatFit}` : undefined],
+              ["Estimated roof capacity (panels)", panelLayout?.estimatedPanelsThatFit ? `${panelLayout.estimatedPanelsThatFit}` : undefined],
               ["Recommended Orientation", panelLayout?.recommendedPanelOrientation],
               ["Inverter Location", simulation.inverterLocation?.replace(/_/g, " ")],
               ["Battery Location", simulation.batteryLocation?.replace(/_/g, " ")],
@@ -4838,22 +4863,18 @@ Subject to final site survey, equipment availability, and engineering approval.`
           </button>
             </>
           )}
-          <button onClick={copy} className="btn btn-primary btn-full">
+          <button onClick={copy} disabled={loadQuoteBlocked} className="btn btn-primary btn-full">
             Copy proposal text
           </button>
-          <button onClick={() => window.print()} className="btn btn-secondary btn-full">
+          <button onClick={() => { if (loadQuoteBlocked) { showToast(proposalBlockedLabel, "error"); return; } window.print(); }} disabled={loadQuoteBlocked} className="btn btn-secondary btn-full">
             Print Page Format
           </button>
           {canShowInternalProposal && (
             <button className="btn btn-secondary btn-full" type="button" disabled={loadQuoteBlocked} onClick={() => {
-              const blob = new Blob([JSON.stringify({ project, loadItemsV2 }, null, 2)], { type: "application/json" });
-              const anchor = document.createElement("a");
-              anchor.href = URL.createObjectURL(blob);
-              anchor.download = "solarise-pro-project.json";
-              anchor.click();
-              URL.revokeObjectURL(anchor.href);
+              navigateToTab("storage");
+              showToast("Use Export current project JSON to download the complete project backup.");
             }}>
-              Export Project JSON
+              Export Project JSON — backup tools
             </button>
           )}
         </div>
@@ -4883,6 +4904,15 @@ Subject to final site survey, equipment availability, and engineering approval.`
           projectId={cloudProjectId}
           actorRole={actorRole}
           onPrepareVersion={onPrepareVersion}
+          showToast={showToast}
+        />
+      )}
+
+      {cloudEnabled && cloudProjectId && canShowInternalProposal && (
+        <CloudVersionHistory
+          platform={platform}
+          organisationId={activeMembership.organisationId}
+          projectId={cloudProjectId}
           showToast={showToast}
         />
       )}
@@ -4984,6 +5014,7 @@ function Carbon({ project, setProject, sizing }) {
 
   return (
     <div className="grid-cols-2">
+      <ImpactEquivalents sizing={sizing} />
       <Card title="Emission factor and methodology" subtitle="Kenya's low-carbon grid requires careful factor selection.">
         <div className="form-grid">
           <SelectField label="Emission Factor Source" value={project.emissionFactorSource} onChange={(v) => update("emissionFactorSource", v)} options={factorOptions} />
@@ -5003,7 +5034,7 @@ function Carbon({ project, setProject, sizing }) {
         )}
       </Card>
 
-      <Card title="Credit generation calculation" subtitle="Gross credits minus buffer and registry deductions.">
+      <Card title="Carbon-credit scenario — not issuance" subtitle="Modelled quantities only. Eligibility, validation, verification and registry issuance are not established by this calculation.">
         <div className="form-grid">
           <Field label="Crediting Period" type="number" value={project.carbonCreditingPeriod} onChange={(v) => update("carbonCreditingPeriod", clamp(v, 1, 30))} suffix="yrs" />
           <Field label="Permanence Buffer" type="number" value={project.carbonPermanenceBuffer} onChange={(v) => update("carbonPermanenceBuffer", clamp(v, 0, 0.4))} suffix="0-1" />
@@ -5012,7 +5043,7 @@ function Carbon({ project, setProject, sizing }) {
           <Metric label="Gross Credits" value={`${num(sizing.carbonGrossCredits, 2)} tCO₂`} />
           <Metric label="Buffer Withheld" value={`${num(sizing.permanenceWithholding, 2)} tCO₂`} />
           <Metric label="Issuance Deduction" value={`${num(sizing.issuanceFeeDeduction, 2)} tCO₂`} />
-          <Metric label="Net Tradeable Credits" value={`${num(sizing.netCarbonCredits, 2)} tCO₂`} good={sizing.netCarbonCredits > 0} />
+          <Metric label="Modelled net credit scenario (not issued)" value={`${num(sizing.netCarbonCredits, 2)} tCO₂`} />
           <Metric label="Annual Net Credits" value={`${num(sizing.annualNetCarbonCredits, 2)} tCO₂/yr`} />
           <Metric label="Lifetime Offset P50 / P90" value={`${num(sizing.lifetimeCarbonOffset, 2)} / ${num(sizing.lifetimeCarbonOffsetP90, 2)} tCO₂`} />
         </div>
@@ -5493,7 +5524,7 @@ function BankPilotFlow({ project, setProject, sizing, derivedLoads, readiness, n
 }
 
 // v11.7 — Asset Library (reusable component catalogue foundation)
-function AssetLibraryTab({ project, setProject, showToast }) {
+function AssetLibraryTab({ project, setProject, sizing, showToast }) {
   const [cat, setCat] = useState("panels");
   const [catalogFilter, setCatalogFilter] = useState("ALL_ASSETS");
   const selections = normalizeAssetSelections(project.assetSelections);
@@ -5505,7 +5536,8 @@ function AssetLibraryTab({ project, setProject, showToast }) {
   return (
     <div className="vf-page-enter" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <PageHeader eyebrow="Asset library" title="Solar component catalogue"
-        description="Browse reusable components and add them to this project. Prices/stock are placeholders to confirm with suppliers — no live supplier feed yet." />
+        description="Match documented hardware to your design, or browse representative assets. Generic entries are examples; prices and stock require supplier confirmation." />
+      <EquipmentMatchingPanel project={project} setProject={setProject} sizing={sizing} />
       <Card title="Browse assets">
         <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.75rem" }}>
           {ASSET_CATEGORIES.map((c) => (
@@ -5533,7 +5565,7 @@ function AssetLibraryTab({ project, setProject, showToast }) {
                     <td className="font-bold">{a.brand} {a.model}{warn && <div style={{ fontSize: "0.72rem", color: "#b45309" }}>⚠ {warn}</div>}</td>
                     <td>{a.capacity}</td>
                     <td><StatusPill tone={availability.state === "AVAILABLE" ? "success" : availability.state === "LOW_STOCK" ? "warning" : "neutral"}>{availability.state.replace(/_/g, " ")}</StatusPill><div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: "0.2rem", maxWidth: "220px" }}>{availability.message}</div></td>
-                    <td style={{ textAlign: "right" }}>{money(a.price)}</td>
+                    <td style={{ textAlign: "right" }}>{a.price == null ? "Not priced" : money(a.price)}</td>
                     <td>{a.warranty}</td>
                     <td style={{ textAlign: "right" }}><button className="btn btn-accent" style={{ padding: "0.2rem 0.6rem", fontSize: "0.75rem" }} onClick={() => add(a.id)}>Add</button></td>
                   </tr>
@@ -5543,8 +5575,8 @@ function AssetLibraryTab({ project, setProject, showToast }) {
           </table>
         </ResponsiveTable>
       </Card>
-      <Card title={`Selected for this project (${selections.length})`} subtitle="Marked assets are saved with the project and exported/imported with it.">
-        {selections.length === 0 ? <EmptyState icon="🧰" title="No assets selected yet" description="Add components from the catalogue above." /> : (
+      <Card title={`Additional catalogue notes (${selections.length})`} subtitle="Matching selections above drive sizing. This optional list is saved for procurement notes only; Add and Prefer do not change the design.">
+        {selections.length === 0 ? <EmptyState icon="🧰" title="No additional catalogue notes" description="Add components from the catalogue above if you need extra procurement notes." /> : (
           <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
             {selections.map((s, i) => {
               const availability = getCommercialAvailability(getAsset(s.assetId) || {}, inventoryLinks[s.assetId]);
@@ -6009,7 +6041,7 @@ function GensetHybrid({ project, setProject, sizing }) {
       <Card title="Altitude derating" subtitle="Use available kVA, not nameplate kVA, at high-altitude sites.">
         <div className="form-grid">
           <Field label="Rated Genset Capacity" type="number" value={project.gensetRatedKva} onChange={(v) => update("gensetRatedKva", Math.max(v, 0))} suffix="kVA" />
-          <Field label="Site Altitude" type="number" value={project.altitude} onChange={(v) => update("altitude", Math.max(v, 0))} suffix="m" />
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Site Altitude" type="number" value={project.altitude} onChange={(v) => update("altitude", Math.max(v, 0))} suffix="m" />
           <Metric label="Derating" value={pct(sizing.gensetDeratePct)} danger={sizing.gensetDeratePct > 0.02} />
           <Metric label="Available Capacity" value={`${num(sizing.gensetAvailableKva, 2)} kVA`} />
         </div>
@@ -6099,11 +6131,13 @@ function MiniGrid({ project, setProject, sizing }) {
   const update = (k, v) => setProject((p) => ({ ...p, [k]: v }));
   return (
     <div className="grid-cols-2">
+      <section className="card field-planning"><h2>Mini-grid planning scope</h2><p className="field-note">Community demand combines household and commercial kWh/day plus anchor kW × operating hours. These are first-pass energy and economics scenarios—not a distribution-network design, approved retail tariff or controller. Coincident peaks, 24-hour dispatch, network losses, voltage drop, protection, metering, customer growth and applicable approvals need separate reviewed evidence.</p></section>
       <Card title="Community load" subtitle="Set subscriber demand and match the Load Assessment daily load to this value.">
         <div className="form-grid">
           <Field label="Households" type="number" value={project.mgHouseholds} onChange={(v) => update("mgHouseholds", Math.max(0, Math.floor(v)))} />
           <Field label="Commercial Customers" type="number" value={project.mgCommercialCustomers} onChange={(v) => update("mgCommercialCustomers", Math.max(0, Math.floor(v)))} />
           <Field label="Anchor Load" type="number" value={project.mgAnchorLoad} onChange={(v) => update("mgAnchorLoad", Math.max(v, 0))} suffix="kW" />
+          <Field label="Anchor operating hours" type="number" value={project.mgAnchorHours ?? 12} onChange={(v) => update("mgAnchorHours", clamp(v, 0, 24))} suffix="hours/day" help="Use the anchor customer's actual schedule. Old projects default to 12 hours; this is not measured demand." />
           <Field label="Household Load" type="number" value={project.mgHouseholdLoadKwh} onChange={(v) => update("mgHouseholdLoadKwh", Math.max(v, 0))} suffix="kWh/day" />
           <Field label="Commercial Load" type="number" value={project.mgCommercialLoadKwh} onChange={(v) => update("mgCommercialLoadKwh", Math.max(v, 0))} suffix="kWh/day" />
           <Metric label="Community Daily Load" value={`${num(sizing.communityDailyKwh, 1)} kWh/day`} />
@@ -6134,7 +6168,7 @@ function MiniGrid({ project, setProject, sizing }) {
       <Card title="Subsidy gap" subtitle="Viability gap for grant or concessional finance applications.">
         <Metric label="Gap / Household / Year" value={money(sizing.subsidyGapPerHousehold)} danger={sizing.subsidyGapPerHousehold > 0} good={sizing.subsidyGapPerHousehold === 0} />
         <div className="carbon-info" style={{ marginTop: "1rem" }}>
-          This figure represents the viability gap that could be covered by REA/REREC subsidies or DFI concessional finance under the Kenya Off-Grid Solar Access Project (KOSAP).
+          This is a modelled funding gap, not confirmation of eligibility for any subsidy or concessional-finance programme. Record current programme terms and obtain the provider's assessment separately.
         </div>
       </Card>
       <Card title="Subscriber economics" subtitle="Connection fee, capex intensity and revenue per user." style={{ gridColumn: "1 / -1" }}>
@@ -6150,10 +6184,16 @@ function MiniGrid({ project, setProject, sizing }) {
   );
 }
 
-function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessmentMode, setLoadAssessmentMode, accessoriesAssumptions, setAccessoriesAssumptions, accessoryOverrides, setAccessoryOverrides, accessoriesCatalogue, setAccessoriesCatalogue, projectRef, setProjectRef, copilotHistory, setCopilotHistory, copilotLastReview, setCopilotLastReview, survey, setSurvey, simulation, setSimulation, savedProjects, setSavedProjects, showToast, onProjectActivated, viewMode, platform, activeMembership, cloudEnabled = false, cloudProjectId, cloudRevisionNo, onCloudProjectChanged, onLocalProjectQuarantined }) {
+export function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessmentMode, setLoadAssessmentMode, accessoriesAssumptions, setAccessoriesAssumptions, accessoryOverrides, setAccessoryOverrides, accessoriesCatalogue, setAccessoriesCatalogue, projectRef, setProjectRef, copilotHistory, setCopilotHistory, copilotLastReview, setCopilotLastReview, survey, setSurvey, simulation, setSimulation, savedProjects, setSavedProjects, showToast, onProjectActivated, viewMode, platform, activeMembership, cloudEnabled = false, cloudProjectId, cloudRevisionNo, onCloudProjectChanged, onLocalProjectQuarantined }) {
   const [saveName, setSaveName] = useState(project.client || survey.clientName || "Untitled Project");
+  const [saveState, setSaveState] = useState({ status: "idle" });
+  const saveInFlight = useRef(false);
+  const confirmedCloudSave = useRef(null);
+  useEffect(() => {
+    confirmedCloudSave.current = cloudProjectId ? { id: cloudProjectId, revisionNo: cloudRevisionNo } : null;
+  }, [cloudProjectId, cloudRevisionNo]);
   const [pendingImport, setPendingImport] = useState(null); // { record, summary, warnings } — review step before applying (v11.3)
-  const canUseProjectJson = normalizeViewMode(viewMode) === "engineer";
+  const canUseProjectJson = canExportProjectBackup(normalizeViewMode(viewMode), { cloudEnabled, role: activeMembership?.role });
   const buildRecord = (extra = {}) => ({
     schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION, exportedBy: project.preparedBy || "", projectRef, pilotSafety: PILOT_SAFETY_METADATA,
     project, survey, simulation,
@@ -6168,37 +6208,60 @@ function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessm
     ...extra,
   });
   const saveCurrent = async () => {
+    if (saveInFlight.current) return;
     const record = buildRecord({ id: Date.now(), name: saveName || project.client || "Untitled Project", savedAt: new Date().toISOString() });
     if (cloudEnabled) {
+      saveInFlight.current = true;
+      setSaveState({ status: "saving" });
       try {
-        const requestId = crypto.randomUUID();
-        const saved = cloudProjectId
-          ? await platform.projects.updateProject({
-            organisationId: activeMembership.organisationId,
-            projectId: cloudProjectId,
-            expectedRevisionNo: cloudRevisionNo,
-            record,
-            requestId,
-            reason: "Project saved from Voltflow workspace",
-          })
-          : await platform.projects.createProject({
-            organisationId: activeMembership.organisationId,
-            record,
-            requestId,
-          });
-        setSavedProjects(await platform.projects.listProjects({ organisationId: activeMembership.organisationId }));
-        onCloudProjectChanged?.(saved);
-        showToast(cloudProjectId ? "Project saved to the organisation workspace." : "Cloud project created in the organisation workspace.");
+        const target = confirmedCloudSave.current;
+        const result = await saveCloudProjectAndRefresh({
+          projects: platform.projects,
+          organisationId: activeMembership.organisationId,
+          projectId: target?.id || cloudProjectId,
+          expectedRevisionNo: target?.revisionNo ?? cloudRevisionNo,
+          record, requestId: crypto.randomUUID(),
+          onSaved: (saved) => { confirmedCloudSave.current = saved; onCloudProjectChanged?.(saved); },
+        });
+        if (result.records) setSavedProjects(result.records);
+        setSaveState(result.refreshError
+          ? { status: "refresh-error", message: "Your project was saved successfully. Refreshing the list will not save it again." }
+          : { status: "idle" });
+        showToast(result.refreshError ? "Project saved; the project list could not refresh." : "Project saved to the organisation workspace.");
       } catch (error) {
-        showToast(error?.code === "CONFLICT" ? "This project changed in another session. Reload it before saving." : `Cloud save failed: ${error?.message || "unknown error"}`, "error");
+        // Input is left untouched so the user can retry or export a backup.
+        const conflict = error?.code === "CONFLICT";
+        const message = conflict
+          ? "This project changed in another session. Reload it before saving."
+          : `Cloud save could not be confirmed: ${error?.message || "unknown error"}`;
+        setSaveState({ status: "error", conflict, message });
+        showToast(message, "error");
+      } finally {
+        saveInFlight.current = false;
       }
       return;
     }
     const { records, persisted } = saveProjectLocal(record, savedProjects);
     setSavedProjects(records);
+    setSaveState(persisted ? { status: "idle" } : { status: "error", conflict: false, message: "Browser storage is full or unavailable — export JSON as a backup." });
     showToast(persisted ? "Project saved locally." : "Saved for this session, but browser storage is full/unavailable — export JSON as a backup.", persisted ? "success" : "error");
   };
+  const refreshSavedProjects = async () => {
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaveState({ status: "refreshing" });
+    try {
+      setSavedProjects(await platform.projects.listProjects({ organisationId: activeMembership.organisationId }));
+      setSaveState({ status: "idle" });
+      showToast("Saved project list refreshed.");
+    } catch {
+      setSaveState({ status: "refresh-error", message: "The saved project is unchanged. The list is still unavailable; try refreshing it later." });
+    } finally {
+      saveInFlight.current = false;
+    }
+  };
   const exportCurrent = () => {
+    if (!canUseProjectJson) { showToast("Project JSON is restricted to authorised members in Engineer View.", "error"); return; }
     const { filename, jsonString } = exportProjectJson(buildRecord({ exportedAt: new Date().toISOString() }));
     const blob = new Blob([jsonString], { type: "application/json" });
     const a = document.createElement("a");
@@ -6210,6 +6273,8 @@ function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessm
   };
   const applyNormalizedRecord = (record) => {
     const norm = normalizeLoadedRecord(record);
+    const loadedSaveName = [record?.name, norm.project.client, norm.survey.clientName].find((value) => typeof value === "string" && value.trim());
+    setSaveName(loadedSaveName || "Untitled Project");
     setProject(norm.project);
     setSurvey(norm.survey);
     setSimulation(norm.simulation);
@@ -6260,6 +6325,7 @@ function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessm
   };
   // v11.3 import safety: validate + summarise first, apply only on confirm
   const importJson = (file) => {
+    if (!canUseProjectJson) { showToast("Project JSON is restricted to authorised members in Engineer View.", "error"); return; }
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
@@ -6314,11 +6380,12 @@ function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessm
       </div>
       <Card title="Save current project" subtitle={cloudEnabled ? "Authenticated organisation workspace." : "Local browser storage — useful for engineers between sessions."}>
         <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1rem" }}>
-          <input className="table-input" style={{ flex: 1, padding: "0.65rem 0.9rem", borderRadius: "var(--radius-md)" }} value={saveName} onChange={(e) => setSaveName(e.target.value)} />
-          <button onClick={saveCurrent} className="btn btn-primary">
-            Save
+          <input aria-label="Project name" className="table-input" style={{ flex: 1, padding: "0.65rem 0.9rem", borderRadius: "var(--radius-md)" }} value={saveName} onChange={(e) => setSaveName(e.target.value)} disabled={["saving", "refreshing"].includes(saveState.status)} />
+          <button onClick={saveCurrent} className="btn btn-primary" disabled={["saving", "refreshing"].includes(saveState.status)}>
+            {saveState.status === "saving" ? "Saving…" : saveState.status === "refreshing" ? "Refreshing…" : "Save"}
           </button>
         </div>
+        <SaveFeedback state={saveState} canExport={canUseProjectJson} onRetry={saveCurrent} onRefresh={refreshSavedProjects} onExport={exportCurrent} />
         <div className="carbon-info">{cloudEnabled ? "Concurrent edits are rejected until the latest revision is reloaded." : "Saved projects remain in this browser until cleared. No cloud submission occurs in local mode."}</div>
       </Card>
       {canUseProjectJson ? (
@@ -6334,14 +6401,14 @@ function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessm
         </div>
       </Card>
       ) : (
-      <Card title="Import / export" subtitle="Engineer View only.">
+      <Card title="Import / export" subtitle="Authorised members in Engineer View only.">
         <WarningPanel tone="info" title="Project JSON hidden in this view">
-          Full project JSON can include internal costs, blockers, raw engineering notes and metadata. Switch to Engineer View to import or export it.
+          Full project JSON can include internal costs, blockers, raw engineering notes and metadata. Only authorised members in Engineer View can import or export it.
         </WarningPanel>
       </Card>
       )}
       {/* v11.3 — Phase 4 import review step */}
-      {pendingImport && (
+      {canUseProjectJson && pendingImport && (
         <Card title="Review import before applying" subtitle="Nothing has been changed yet — applying replaces the current working project." style={{ gridColumn: "1 / -1", border: "2px solid #93c5fd" }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", fontSize: "0.82rem", marginBottom: "0.75rem" }}>
             <span><b>Project:</b> {pendingImport.summary.name}</span>
@@ -6374,7 +6441,7 @@ function Storage({ project, setProject, loadItemsV2, setLoadItemsV2, loadAssessm
           getRowKey={(r) => r.id}
           stickyHeader={false}
           emptyState={<EmptyState icon="💾" title="No saved projects yet"
-            description="Save the current project to keep it in this browser, or import a project JSON file exported from another device." />}
+            description={cloudEnabled ? "Projects saved to your organisation workspace appear here when the project list is available." : "Save the current project to keep it in this browser, or import a project JSON file exported from another device."} />}
           columns={[
             { key: "name", label: "Project", bold: true, render: (r) => r.name },
             { key: "client", label: "Client", hideOnMobile: true, render: (r) => r.project?.client || "—" },
@@ -6488,7 +6555,7 @@ function FieldDashboard({ survey, setActive }) {
     { key: "roof-shading",   label: "Roof Assessment",  done: survey.roofLengthM > 0 && survey.roofWidthM > 0 },
     { key: "electrical",     label: "Electrical",       done: survey.meterNumber !== "" || !survey.kplcActive },
     { key: "loads",          label: "Load Inventory",   done: false },
-    { key: "site-photos",    label: "Site Photos",      done: Object.values(survey.photos).some(Boolean) },
+    { key: "site-photos",    label: "Site Photos",      done: countSitePhotos(survey.photos) > 0 },
     { key: "safety-risks",   label: "Safety Review",    done: false },
   ];
   const done = steps.filter((s) => s.done).length;
@@ -6601,7 +6668,7 @@ function SiteSurvey({ survey, setSurvey, setActive }) {
     { label: "Roof Assessment", done: survey.roofLengthM > 0 },
     { label: "Electrical",      done: !!survey.meterNumber || !survey.kplcActive },
     { label: "Load Inventory",  done: false },
-    { label: "Site Photos",     done: Object.values(survey.photos).some(Boolean) },
+    { label: "Site Photos",     done: countSitePhotos(survey.photos) > 0 },
     { label: "Safety Review",   done: false },
   ];
   const done = steps.filter((s) => s.done).length;
@@ -6841,8 +6908,8 @@ function RoofLayoutTab({ survey, setSurvey, project, setProject, sizing, roofGeo
         {/* Panel layout parameters */}
         <Card title="Panel dimensions & layout" subtitle="Used to estimate how many panels fit on the roof.">
           <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-            <Field label="Panel Length (m)" type="number" value={project.panelLengthM} onChange={v => upd("panelLengthM", v)} step="0.01" />
-            <Field label="Panel Width (m)"  type="number" value={project.panelWidthM}  onChange={v => upd("panelWidthM", v)}  step="0.01" />
+            <Field disabled={!!project.equipmentSelection?.enabled} label="Panel Length (m)" type="number" value={project.panelLengthM} onChange={v => upd("panelLengthM", v)} step="0.01" />
+            <Field disabled={!!project.equipmentSelection?.enabled} label="Panel Width (m)"  type="number" value={project.panelWidthM}  onChange={v => upd("panelWidthM", v)}  step="0.01" />
             <Field label="Edge Setback (m)" type="number" value={project.roofEdgeSetbackM} onChange={v => upd("roofEdgeSetbackM", v)} step="0.1" help="Clearance from roof edges" />
             <Field label="Walkway (m)"      type="number" value={project.roofWalkwayAllowanceM} onChange={v => upd("roofWalkwayAllowanceM", v)} step="0.1" help="Maintenance walkway allowance" />
             <SelectField label="Mounting Orientation" value={project.mountingOrientation} onChange={v => upd("mountingOrientation", v)}
@@ -7000,57 +7067,8 @@ function ElectricalAssessment({ survey, setSurvey, setActive }) {
   );
 }
 
-function SitePhotos({ survey, setSurvey }) {
-  const set = (k, v) => setSurvey((s) => ({ ...s, photos: { ...s.photos, [k]: v } }));
-  const slots = [
-    "Roof Front", "Roof Close-up", "Shading Source", "DB Box Open",
-    "KPLC Meter", "Inverter Location", "Battery Location", "Cable Route",
-    "Main Entrance", "Site Overview",
-  ];
-  const captured = slots.filter((s) => survey.photos[s]);
-
-  return (
-    <Card title="Site Photos" subtitle={`${captured.length} of ${slots.length} photos captured`}>
-      {captured.length < slots.length && (
-        <AlertBox type="warning">
-          ⚠ {slots.filter((s) => !survey.photos[s]).join(", ")} — still missing. Proposal cannot be finalised until all mandatory photos are captured.
-        </AlertBox>
-      )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "10px", marginTop: "10px" }}>
-        {slots.map((slot) => {
-          const done = !!survey.photos[slot];
-          return (
-            <div
-              key={slot}
-              onClick={() => set(slot, !done)}
-              style={{
-                background: done ? "#ecfdf5" : "#f8fafc",
-                border: `2px ${done ? "solid #10b981" : "dashed #e2e8f0"}`,
-                borderRadius: "10px",
-                aspectRatio: "4/3",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "6px",
-                cursor: "pointer",
-                fontSize: "11px",
-                color: done ? "#065f46" : "#94a3b8",
-                textAlign: "center",
-                padding: "8px",
-              }}
-            >
-              <span style={{ fontSize: "22px" }}>{done ? "✓" : "📷"}</span>
-              <span>{slot}{done ? " ✓" : ""}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ marginTop: "0.75rem", fontSize: "12px", color: "var(--text-muted)" }}>
-        Click a slot to mark as captured. Photos are auto-labelled with the site reference for filing.
-      </div>
-    </Card>
-  );
+function SitePhotos(props) {
+  return <SitePhotoGallery {...props} />;
 }
 
 function SafetyRisks({ survey, setSurvey }) {
@@ -7058,7 +7076,7 @@ function SafetyRisks({ survey, setSurvey }) {
   const risks = [
     { label: "Roof structural condition", ok: survey.roofCondition === "Good" || survey.roofCondition === "Fair", status: survey.roofCondition },
     { label: "No asbestos detected", ok: survey.roofType !== "Asbestos — Do Not Proceed", status: survey.roofType !== "Asbestos — Do Not Proceed" ? "Clear" : "ASBESTOS — Do Not Proceed" },
-    { label: "Earthing available", ok: survey.earthingAvailable, status: survey.earthingAvailable ? "Confirmed" : "Not available — add to BoQ" },
+    { label: "Earthing available", ok: survey.earthingAvailable, status: withSurveyAssumption("earthingAvailable", survey.earthingAvailable ? "Available" : "Not available — add to BoQ", survey) },
     { label: "DB condition", ok: survey.dbCondition !== "Needs upgrade", status: survey.dbCondition },
     { label: "DB spare breaker space", ok: survey.spareBreakerSpace !== "No — DB upgrade needed", status: survey.spareBreakerSpace },
     { label: "Wiring condition", ok: survey.wiringCondition === "Good", status: survey.wiringCondition },
@@ -7226,10 +7244,10 @@ function EngineeringCompliance({ project, sizing, survey }) {
           </table>
         </div>
         <ComplianceRow label={`DC cable ${project.dcCableSizeMm2}mm² vs design current ${num(s.dcCableRatedA,1)}A`}
-          value={s.dcCableAmpacityOk ? (s.dcCableAdvisoryA ? `${s.dcCableAdvisoryA}A OK` : "Non-standard size") : `${s.dcCableAdvisoryA}A — UNDERSIZED`}
+          value={!s.dcCableAdvisoryA ? "Not checked — engineer verification required" : s.dcCableAmpacityOk ? `${s.dcCableAdvisoryA}A OK` : `${s.dcCableAdvisoryA}A — UNDERSIZED`}
           ok={s.dcCableAmpacityOk} danger={!s.dcCableAmpacityOk && s.dcCableAdvisoryA > 0} />
         <ComplianceRow label={`AC cable ${project.acCableSizeMm2}mm² vs breaker design ${num(s.acBreakerDesignA,1)}A`}
-          value={s.acCableAmpacityOk ? (s.acCableAdvisoryA ? `${s.acCableAdvisoryA}A OK` : "Non-standard size") : `${s.acCableAdvisoryA}A — UNDERSIZED`}
+          value={!s.acCableAdvisoryA ? "Not checked — engineer verification required" : s.acCableAmpacityOk ? `${s.acCableAdvisoryA}A OK` : `${s.acCableAdvisoryA}A — UNDERSIZED`}
           ok={s.acCableAmpacityOk} danger={!s.acCableAmpacityOk && s.acCableAdvisoryA > 0} />
         <div style={{ fontSize:"0.76rem", color:"#64748b", marginTop:"0.5rem", background:"#f8fafc", padding:"0.6rem 0.8rem", borderRadius:"0.4rem" }}>
           ⚠️ Advisory ampacity only. Final cable sizing must account for installation method, conduit grouping, ambient and roof temperature, insulation type, voltage drop, and protection coordination.
@@ -8256,8 +8274,8 @@ function InstallerSimulation({ project, setProject, survey, sizing, simulation, 
 
           <Card title="Roof dimensions for layout" subtitle="Adjust if different from survey inputs.">
             <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-              <Field label="Panel Length (m)" type="number" step="0.01" value={project.panelLengthM} onChange={v => setProject(p => ({ ...p, panelLengthM: v }))} />
-              <Field label="Panel Width (m)"  type="number" step="0.01" value={project.panelWidthM}  onChange={v => setProject(p => ({ ...p, panelWidthM: v }))} />
+              <Field disabled={!!project.equipmentSelection?.enabled} label="Panel Length (m)" type="number" step="0.01" value={project.panelLengthM} onChange={v => setProject(p => ({ ...p, panelLengthM: v }))} />
+              <Field disabled={!!project.equipmentSelection?.enabled} label="Panel Width (m)"  type="number" step="0.01" value={project.panelWidthM}  onChange={v => setProject(p => ({ ...p, panelWidthM: v }))} />
               <Field label="Edge Setback (m)" type="number" step="0.1"  value={project.roofEdgeSetbackM} onChange={v => setProject(p => ({ ...p, roofEdgeSetbackM: v }))} help="Edge clearance" />
               <Field label="Walkway (m)"      type="number" step="0.1"  value={project.roofWalkwayAllowanceM} onChange={v => setProject(p => ({ ...p, roofWalkwayAllowanceM: v }))} help="Maintenance walkway" />
             </div>
@@ -8619,9 +8637,9 @@ function StringPlanTab({ liveStringPlan, project, setProject, sizing, simulation
             onChange={v => setProject(p => ({ ...p, inverterMpptCount: Math.max(1, Math.floor(v || 1)) }))} />
           <Field label="Strings per MPPT" type="number" value={project.inverterStringsPerMppt || 2}
             onChange={v => setProject(p => ({ ...p, inverterStringsPerMppt: Math.max(1, Math.floor(v || 1)) }))} />
-          <Field label="Panels per string" type="number" value={project.panelsPerString || 12}
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Panels per string" type="number" value={project.panelsPerString || 12}
             onChange={v => setProject(p => ({ ...p, panelsPerString: Math.max(1, Math.floor(v || 1)) }))} />
-          <Field label="Inverter max DC (V)" type="number" value={project.inverterMaxDcV || 1000}
+          <Field disabled={!!project.equipmentSelection?.enabled} label="Inverter max DC (V)" type="number" value={project.inverterMaxDcV || 1000}
             onChange={v => setProject(p => ({ ...p, inverterMaxDcV: v }))} />
         </div>
         <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
@@ -9522,6 +9540,7 @@ function ProjectDelivery({ project, setProject, sizing, accessoriesBoQ, viewMode
       {tab === "checklist" && <DeliveryChecklist delivery={delivery} onChange={onChange} />}
       {tab === "issues" && <DeliveryIssues delivery={delivery} onChange={onChange} showToast={showToast} />}
       {tab === "approvals" && !isTechnician && <DeliveryApprovals delivery={delivery} onChange={onChange} showToast={showToast} />}
+      {!isTechnician && tab === "overview" && <InstalledAssetRegister project={project} setProject={setProject} />}
 
       {!isTechnician && tab === "overview" && (
         <Card title="Delivery details" subtitle="Ownership and expected dates for this project.">
@@ -9659,70 +9678,14 @@ function ResetLocalDataPanel({ showToast, onCleared, compact }) {
   );
 }
 
-function StartScreenCard({ icon, title, description, action, onClick, tone = "default", disabled }) {
-  const accent = tone === "primary" ? "var(--color-primary)" : tone === "demo" ? "#7c3aed" : "#e2e8f0";
+function StartScreen({ showToast, onLocalDataCleared, ...workspaceProps }) {
   return (
-    <button onClick={onClick} disabled={disabled}
-      className="vf-card-enter"
-      style={{
-        textAlign: "left", background: "var(--bg-card)", border: `1.5px solid ${accent}`,
-        borderRadius: "var(--radius-lg)", padding: "1.1rem 1.15rem", cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.5 : 1, display: "flex", flexDirection: "column", gap: "0.3rem",
-        boxShadow: "var(--shadow-sm)", font: "inherit", minHeight: "128px",
-      }}>
-      <span style={{ fontSize: "1.35rem" }} aria-hidden="true">{icon}</span>
-      <span style={{ fontWeight: 800, fontSize: "0.95rem", color: "var(--text-main)" }}>{title}</span>
-      <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", lineHeight: 1.5, flex: 1 }}>{description}</span>
-      {action && <span style={{ fontSize: "0.78rem", fontWeight: 700, color: tone === "demo" ? "#7c3aed" : "var(--color-primary)" }}>{action} →</span>}
-    </button>
-  );
-}
-
-function StartScreen({ onNewProject, onOpenSaved, onImport, onDemo, onEnergyUpload, lastProject, onContinueLast, savedCount, showToast, onLocalDataCleared }) {
-  return (
-    <div className="vf-page-enter" style={{ maxWidth: "1000px", margin: "0 auto" }}>
-      <div style={{ textAlign: "center", padding: "1.5rem 0 2rem" }}>
-        <img src="/logo.png" alt="Voltflow" style={{ height: "52px", objectFit: "contain", marginBottom: "1rem" }} />
-        <h1 style={{ fontSize: "2rem", fontWeight: 900, color: "var(--text-main)", margin: 0, lineHeight: 1.15 }}>
-          Welcome to Voltflow
-        </h1>
-        <p style={{ fontSize: "0.95rem", color: "var(--text-muted)", marginTop: "0.6rem", maxWidth: "58ch", marginInline: "auto", lineHeight: 1.6 }}>
-          Solar project delivery, sizing, simulation, proposal and workflow platform.
-        </p>
-      </div>
-
-      <CardGrid min={250} gap="1rem">
-        <StartScreenCard icon="✳️" tone="primary" title="Start New Project"
-          description="Set up a new client project in a few guided steps."
-          action="Begin" onClick={onNewProject} />
-        <StartScreenCard icon="📂" title="Open Saved Project"
-          description={savedCount > 0 ? `${savedCount} project${savedCount === 1 ? "" : "s"} saved in this browser.` : "No projects saved in this browser yet."}
-          action={savedCount > 0 ? "Browse" : undefined} onClick={onOpenSaved} disabled={savedCount === 0} />
-        <StartScreenCard icon="⬆️" title="Import Project JSON"
-          description="Open a project exported from another device or teammate."
-          action="Choose file" onClick={onImport} />
-        <StartScreenCard icon="🧪" tone="demo" title="Try Demo Project"
-          description="Explore Voltflow with clearly-labelled sample data. Nothing here is a real client."
-          action="Pick a demo" onClick={onDemo} />
-        <StartScreenCard icon="📊" title="Upload Energy Data"
-          description="Start from a data logger or interval CSV/XLSX and build the project from measured consumption."
-          action="Upload" onClick={onEnergyUpload} />
-        {lastProject && (
-          <StartScreenCard icon="⏱" title="Continue Last Project"
-            description={`${lastProject.name} — last opened ${lastProject.savedAt ? new Date(lastProject.savedAt).toLocaleDateString() : "recently"}.`}
-            action="Resume" onClick={onContinueLast} />
-        )}
-      </CardGrid>
-
-      <div style={{ marginTop: "2rem" }}>
+    <WorkspaceHome {...workspaceProps}>
+      <details className="vfw-data-tools">
+        <summary>Browser data tools</summary>
         <ResetLocalDataPanel showToast={showToast} onCleared={onLocalDataCleared} />
-      </div>
-
-      <div style={{ marginTop: "1.25rem", padding: "0.85rem 1.1rem", background: "var(--bg-main)", border: "1px solid var(--border-medium)", borderRadius: "var(--radius-md)", fontSize: "0.8rem", color: "var(--text-muted)", lineHeight: 1.6, textAlign: "center" }}>
-        Voltflow Internal Alpha is for feasibility sizing, survey support, proposal preparation and workflow testing.
-        Final engineering approval is required.
-      </div>
-    </div>
+      </details>
+    </WorkspaceHome>
   );
 }
 
@@ -10448,7 +10411,7 @@ function Toast({ toast }) {
   const border = toast.type === "error" ? "#fca5a5" : "#6ee7b7";
   const color = toast.type === "error" ? "#7f1d1d" : "#065f46";
   return (
-    <div style={{ position: "fixed", bottom: "1.5rem", right: "1.5rem", zIndex: 9999, padding: "0.85rem 1.25rem", borderRadius: "0.5rem", border: `1px solid ${border}`, backgroundColor: bg, color, fontSize: "0.9rem", fontWeight: 600, boxShadow: "0 4px 12px rgba(0,0,0,0.12)", maxWidth: "360px" }}>
+    <div role={toast.type === "error" ? "alert" : "status"} aria-atomic="true" style={{ position: "fixed", bottom: "1.5rem", right: "1.5rem", zIndex: 9999, padding: "0.85rem 1.25rem", borderRadius: "0.5rem", border: `1px solid ${border}`, backgroundColor: bg, color, fontSize: "0.9rem", fontWeight: 600, boxShadow: "0 4px 12px rgba(0,0,0,0.12)", maxWidth: "min(360px, calc(100vw - 3rem))" }}>
       {toast.msg}
     </div>
   );
@@ -10468,7 +10431,8 @@ export default function SolariseProSizingApp() {
   if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debugPerf") === "1") {
     window.__vfPerf = perf.current;
   }
-  const [project, setProject] = useState(defaultProject);
+  const [project, setProjectState] = useState(defaultProject);
+  const setProject = useCallback((next) => setProjectState((current) => resolveEquipmentProject(typeof next === "function" ? next(current) : next)), []);
   // v10 — loadItemsV2 is the single source of truth for load data. Draft
   // pattern (edits stay in draftLoadItemsV2 until "Update Sizing") preserved
   // from v8.3's loads/draftLoads.
@@ -10494,8 +10458,20 @@ export default function SolariseProSizingApp() {
 
   useEffect(() => {
     if (!sidebarOpen) return undefined;
+    document.querySelector("#workspace-sidebar button, #workspace-sidebar input")?.focus();
     const closeSidebarOnEscape = (event) => {
-      if (event.key === "Escape") setSidebarOpen(false);
+      if (event.key === "Escape") {
+        setSidebarOpen(false);
+        document.getElementById("workspace-menu-toggle")?.focus();
+      }
+      if (event.key === "Tab") {
+        const controls = Array.from(document.querySelectorAll("#workspace-menu-toggle, #workspace-sidebar button, #workspace-sidebar input"))
+          .filter((element) => !element.disabled && element.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
     };
     window.addEventListener("keydown", closeSidebarOnEscape);
     return () => window.removeEventListener("keydown", closeSidebarOnEscape);
@@ -10509,7 +10485,19 @@ export default function SolariseProSizingApp() {
   // loads, imports or explicitly picks a demo. `startupView` drives which
   // entry screen is shown while hasActiveProject is false.
   const [hasActiveProject, setHasActiveProject] = useState(false);
+  const [hasPausedWorkspace, setHasPausedWorkspace] = useState(false);
   const [startupView, setStartupView] = useState("welcome"); // welcome | wizard | demos
+  useEffect(() => {
+    const workspace = document.getElementById("workspace-main");
+    workspace?.focus({ preventScroll: true });
+    workspace?.scrollIntoView({ block: "start", behavior: "instant" });
+  }, [active, hasActiveProject, startupView]);
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 992px)");
+    const closeDesktopMenu = () => { if (desktop.matches) setSidebarOpen(false); };
+    desktop.addEventListener("change", closeDesktopMenu);
+    return () => desktop.removeEventListener("change", closeDesktopMenu);
+  }, []);
   const [pendingDemoConversion, setPendingDemoConversion] = useState(false);
   // v11.4 — presentation mode (engineer | client | technician). Stored on the
   // project so it round-trips through save/load; never affects calculations.
@@ -10549,7 +10537,9 @@ export default function SolariseProSizingApp() {
     monthlySavingsKes: sizing.monthlySavings,
     nonEnergyChargesKes: project.nonEnergyChargesKes || 0,
     nonEnergyChargesKnown: project.nonEnergyChargesKnown === true,
-  }), [project.monthlyBill, project.gridTariff, project.nonEnergyChargesKes, project.nonEnergyChargesKnown, sizing.dailyKwh, sizing.monthlySavings]);
+    measuredMonthlyKwh: sizing.tariffModel?.ready ? sizing.tariffModel.referenceKwh : null,
+    billingDays: sizing.tariffModel?.ready ? sizing.tariffModel.billingDays : 30,
+  }), [project.monthlyBill, project.gridTariff, project.nonEnergyChargesKes, project.nonEnergyChargesKnown, sizing.dailyKwh, sizing.monthlySavings, sizing.tariffModel]);
   const loadSummary = useMemo(
     () => summarizeLoads(loadItemsV2, loadAssessmentMode, project),
     [loadItemsV2, loadAssessmentMode, project]
@@ -10657,6 +10647,10 @@ export default function SolariseProSizingApp() {
   const explainCtx = { project, sizing, borehole: boreholeResult, readiness: projectReadiness };
   const quickWins   = useMemo(() => generateQuickWins(derivedLoads, survey), [derivedLoads, survey]);
   const systemOptions = useMemo(() => {
+    // Do not compute design options / revision sizing before a project is active.
+    // The entry screen has no project to size, and this keeps all revision-hash
+    // work (option inputs_hash) off the startup render path.
+    if (!hasActiveProject) return undefined;
     if (project.systemType !== "Solar PV – Hybrid" && project.systemType !== "Off-grid" && project.systemType !== "Genset hybrid") return null;
     const templates = [
       {
@@ -10692,7 +10686,7 @@ export default function SolariseProSizingApp() {
       revisionId: project.designRevision?.revision_id || null,
       calculationVersion: project.designRevision?.calculation_version || DESIGN_CALCULATION_VERSION,
     });
-  }, [project, derivedLoads]);
+  }, [project, derivedLoads, hasActiveProject]);
 
   // Sync survey fields → project state so useSizing always reflects field data
   React.useEffect(() => {
@@ -10746,16 +10740,11 @@ export default function SolariseProSizingApp() {
 
   // v11.4 — if the current tab is hidden by the active view mode, fall back to
   // a tab that mode can show (prevents a blank screen after switching).
-  const VIEW_MODE_TABS = {
-    client: ["field-dashboard", "dashboard", "proposal", "assistant", "delivery"],
-    technician: ["field-dashboard", "dashboard", "site-survey", "roof-shading", "roof-layout", "electrical",
-      "site-photos", "safety-risks", "installer-sim", "proposal", "readiness", "storage", "assistant", "feedback", "delivery"],
-    bank: ["bank-flow", "field-dashboard", "proposal", "storage"], // v11.7.1 Bank Pilot Mode
-  };
   useEffect(() => {
-    const allowed = VIEW_MODE_TABS[viewMode];
-    if (allowed && !allowed.includes(active)) setActive(viewMode === "bank" ? "bank-flow" : "field-dashboard");
-  }, [viewMode, active]);
+    if (viewMode === "engineer") return;
+    const allowed = getWorkspaceNavigation({ viewMode, project }).flatMap((group) => group.items.map((item) => item.key));
+    if (!allowed.includes(active)) setActive(viewMode === "bank" ? "bank-flow" : "field-dashboard");
+  }, [viewMode, active, project.systemType]);
   useEffect(() => {
     if (enforceRoleAccess && !isTabAllowedForRole(active, actorRole)) setActive("field-dashboard");
   }, [active, actorRole, enforceRoleAccess]);
@@ -10766,7 +10755,7 @@ export default function SolariseProSizingApp() {
     if (!highlightId) return;
     const t = setTimeout(() => {
       const el = document.querySelector(`[data-highlight="${highlightId}"]`);
-      if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "center" });
     }, 120);
     return () => clearTimeout(t);
   }, [highlightId, active]);
@@ -11020,28 +11009,35 @@ export default function SolariseProSizingApp() {
   };
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${sidebarOpen ? "vfw-menu-open" : ""}`}>
+      <a className="vfw-skip-link" href="#workspace-main">Skip to workspace</a>
       {/* Mobile Header */}
       <div className="nav-mobile-toggle">
-        <img src="/logo.png" alt="Voltflow" style={{ height: "28px", objectFit: "contain" }} />
-        <button onClick={() => setSidebarOpen(!sidebarOpen)} className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem" }}>
+        <BrandLogo style={{ height: "28px" }} />
+        <button id="workspace-menu-toggle" aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebarOpen(!sidebarOpen)} className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem" }}>
           {sidebarOpen ? "Close Menu" : "Open Menu"}
         </button>
       </div>
 
-      <Sidebar active={active} setActive={setActive} project={project} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
+      <Sidebar active={active} setActive={(targetTab) => { if (targetTab !== active) navigateToTab(targetTab); }} project={project} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
         viewMode={viewMode} setViewMode={setViewMode} hasActiveProject={hasActiveProject}
         actorRole={actorRole} enforceRoleAccess={enforceRoleAccess}
-        onExitToStart={() => { setHasActiveProject(false); setStartupView("welcome"); setSidebarOpen(false); }} />
+        onExitToStart={() => { setHasPausedWorkspace(true); setHasActiveProject(false); setStartupView("welcome"); setSidebarOpen(false); }} />
 
       {/* key drives the page-transition animation; kept STABLE during startup so
           the onboarding wizard never remounts and loses its step state */}
-      <main className="main-content" key={hasActiveProject ? active : "startup"}>
+      <main id="workspace-main" tabIndex={-1} inert={sidebarOpen ? "" : undefined} className="main-content" key={hasActiveProject ? active : "startup"}>
         <div className="content-max-width vf-page-enter">
+          {hasActiveProject && <WorkspaceHeader project={project} active={active} previousTab={previousView?.tab}
+            groups={getWorkspaceNavigation({ viewMode, project, canAccess: (key) => !enforceRoleAccess || isTabAllowedForRole(key, actorRole) })}
+            onBack={goBack} onNavigate={(targetTab) => { if (targetTab !== active) navigateToTab(targetTab); }} />}
           {/* v11.7.1 — classification / pilot banner (always visible) */}
-          <div className={`vf-pilot-banner ${viewMode === "bank" ? "bank" : ""}`}>
-            🔒 Voltflow <strong>Internal Alpha / Controlled EPC Staging Build</strong> — feasibility & workflow only, not certified engineering approval. {cloudEnabled ? `Authenticated tenant workspace: ${activeMembership?.organisationName || "organisation"} (${actorRole}).` : "Browser-only storage; use test or non-sensitive customer data until auth and tenant isolation are enabled. No cloud submission occurs."}
-          </div>
+          <details className={`vf-pilot-banner ${viewMode === "bank" ? "bank" : ""}`}>
+            <summary><strong>Planning estimates.</strong> Final designs require qualified engineering review.</summary>
+            <div className="vf-pilot-banner-details">
+              Voltflow <strong>Internal Alpha / Controlled EPC Staging Build</strong> — feasibility & workflow only, not certified engineering approval. {cloudEnabled ? `Authenticated tenant workspace: ${activeMembership?.organisationName || "organisation"} (${actorRole}).` : "Browser-only storage; use test or non-sensitive customer data until auth and tenant isolation are enabled. No cloud submission occurs."}
+            </div>
+          </details>
           {safeMode && (
             <div className="vf-safe-mode-banner" role="status">
               <div><strong>Safe Mode</strong> - saved browser project data not loaded.</div>
@@ -11091,6 +11087,9 @@ export default function SolariseProSizingApp() {
           {/* v11.4.1 — clean startup gate: nothing loads until the user chooses */}
           {!hasActiveProject && startupView === "welcome" && (
             <StartScreen
+              cloudEnabled={cloudEnabled}
+              pausedProject={hasPausedWorkspace ? project : null}
+              onResumeCurrent={() => setHasActiveProject(true)}
               savedCount={savedProjects.length}
               lastProject={lastProjectRecord}
               onNewProject={() => setStartupView("wizard")}
@@ -11128,7 +11127,7 @@ export default function SolariseProSizingApp() {
           {active === "site-survey"    && <SiteSurvey survey={survey} setSurvey={setSurvey} setActive={setActive} />}
           {active === "roof-shading"   && <RoofShading survey={survey} setSurvey={setSurvey} setActive={setActive} />}
           {active === "electrical"     && <ElectricalAssessment survey={survey} setSurvey={setSurvey} setActive={setActive} />}
-          {active === "site-photos"    && <SitePhotos survey={survey} setSurvey={setSurvey} />}
+          {active === "site-photos"    && <SitePhotos survey={survey} setSurvey={setSurvey} projectRef={project.projectRef} cloudEnabled={cloudEnabled} platform={platform} organisationId={activeMembership?.organisationId} projectId={cloudProjectRecord?.id} onOpenEvidence={() => setActive("evidence")} />}
           {active === "safety-risks"   && <SafetyRisks survey={survey} setSurvey={setSurvey} />}
           {/* Engineering tabs */}
           {active === "dashboard"  && (viewMode === "client"
@@ -11136,6 +11135,7 @@ export default function SolariseProSizingApp() {
             : <Dashboard project={project} sizing={sizing} setActive={setActive} readiness={readiness} advisory={advisory} governance={governance} panelLayout={panelLayout} roofWarnings={roofWarnings} simWarnings={simWarnings} hasUnappliedLoadChanges={hasUnappliedLoadChanges} />)}
           {active === "project"    && <ProjectInputs project={project} setProject={setProject} setActive={setActive} />}
           {active === "loads"      && <LoadAssessment
+            project={project}
             loadAssessmentMode={loadAssessmentMode}
             setLoadAssessmentMode={setLoadAssessmentMode}
             loadItemsV2={loadItemsV2}
@@ -11212,7 +11212,7 @@ export default function SolariseProSizingApp() {
           </div>}
           {active === "studio"     && <VoltflowStudio project={project} sizing={sizing} readiness={projectReadiness} blocks={studioBlocks} derivedLoads={derivedLoads} navigateToTab={navigateToTab} openExplain={setExplainKey} onApplyTemplate={applyStudioTemplate} onApplyScenario={applyStudioScenario} viewMode={viewMode} />}
           {active === "bank-flow"  && <BankPilotFlow project={project} setProject={setProject} sizing={sizing} derivedLoads={derivedLoads} readiness={projectReadiness} navigateToTab={navigateToTab} onApplyScenario={applyStudioScenario} showToast={showToast} />}
-          {active === "assets-lib" && <AssetLibraryTab project={project} setProject={setProject} showToast={showToast} />}
+          {active === "assets-lib" && <AssetLibraryTab project={project} setProject={setProject} sizing={sizing} showToast={showToast} />}
           {active === "genset"     && <GensetHybrid project={project} setProject={setProject} sizing={sizing} />}
           {active === "ev"         && <EVCharging project={project} setProject={setProject} sizing={sizing} />}
           {active === "minigrid"   && <MiniGrid project={project} setProject={setProject} sizing={sizing} />}
@@ -11244,7 +11244,7 @@ export default function SolariseProSizingApp() {
       {/* v11.6 — clean Help/Feedback dock (bottom-right, stacked, never overlaps
           inputs; labels collapse to icons on small screens). Action Center FAB
           lives bottom-left, so they don't collide. */}
-      <div className="vf-help-dock">
+      {hasActiveProject && <div className="vf-help-dock">
         {active !== "assistant" && viewMode !== "bank" && (
           <button onClick={() => setActive("assistant")} title="Ask the Voltflow AI Assistant" className="vf-help-btn vf-help-primary">
             ✨ <span className="vf-help-label">AI Assistant</span>
@@ -11255,7 +11255,7 @@ export default function SolariseProSizingApp() {
             🐞 <span className="vf-help-label">Feedback</span>
           </button>
         )}
-      </div>
+      </div>}
       <Toast toast={toast} />
     </div>
   );

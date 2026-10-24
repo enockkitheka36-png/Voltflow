@@ -1,0 +1,10 @@
+.vf-brand-logo {
+  display: inline-block;
+  width: auto;
+  height: 52px;
+  max-width: 100%;
+  aspect-ratio: 19 / 6;
+  vertical-align: middle;
+  border-radius: 6px;
+  flex-shrink: 0;
+}

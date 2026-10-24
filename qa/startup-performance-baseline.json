@@ -1,0 +1,13 @@
+{
+  "scope": "Pre-deferral local-demo entry and recursive static JavaScript imports; gzip is an estimate",
+  "entry": "index.html",
+  "files": [
+    "assets/index-D_uIwlbU.js"
+  ],
+  "staticKeys": [
+    "index.html"
+  ],
+  "appDeferred": false,
+  "bytes": 1221488,
+  "gzipBytes": 345852
+}

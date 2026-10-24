@@ -17,7 +17,7 @@ export function normalizeInventoryLink(raw) {
 
 export function getCommercialAvailability(asset = {}, linkInput = null, options = {}) {
   const link = normalizeInventoryLink(linkInput || asset.inventoryLink);
-  if (!link) return { state: "CATALOG_ONLY", provider: null, available_qty: null, message: "Valid engineering asset; no live inventory source is linked." };
+  if (!link) return { state: "CATALOG_ONLY", provider: null, available_qty: null, message: "Catalogue entry only; compatibility needs verification and no live inventory source is linked." };
   if (!link.external_item_id || !link.sku || !link.active) return { state: "UNLINKED", provider: link.provider, available_qty: link.qty_available, message: "Inventory mapping requires manual review." };
   const syncedAt = Date.parse(link.synced_at || "");
   const maxAgeMs = Number(options.maxAgeMs) || 24 * 60 * 60 * 1000;

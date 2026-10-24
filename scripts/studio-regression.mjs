@@ -11,6 +11,7 @@ import { VALID_TABS } from "../src/utils/navigation.js";
 import { normalizeProposalStudioConfig } from "../src/utils/proposalStudio.js";
 import { normalizeAssetSelections } from "../src/utils/assetLibrary.js";
 import { APP_VERSION } from "../src/utils/schemaMigration.js";
+import { getWorkspaceNavigation } from "../src/utils/workspaceNavigation.js";
 
 let passed = 0, failed = 0;
 function test(name, fn) { try { fn(); console.log("  PASS: " + name); passed++; } catch (e) { console.error("  FAIL: " + name); console.error("    " + e.message); failed++; } }
@@ -25,7 +26,8 @@ console.log(`\n${APP_VERSION} — Studio Regression\n`);
 test("1. Studio tab is wired into the app (component + route + nav)", () => {
   assert.ok(/function VoltflowStudio/.test(app), "VoltflowStudio component");
   assert.ok(/active === "studio"/.test(app), "studio route");
-  assert.ok(/btn\("studio"/.test(app), "studio nav entry");
+  assert.ok(/<WorkspaceNavigation groups=\{groups\}/.test(app), "shared menu renderer is wired");
+  assert.ok(getWorkspaceNavigation().some((group) => group.items.some((item) => item.key === "studio")), "studio nav entry");
 });
 
 test("2. buildStudioBlocks returns the 10 project blocks with statuses", () => {
