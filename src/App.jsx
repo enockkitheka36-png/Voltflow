@@ -3,6 +3,11 @@ import "./App.css";
 import { BrandLogo } from "./components/BrandLogo.jsx";
 import EquipmentMatchingPanel from "./components/EquipmentMatchingPanel.jsx";
 import ElectricityTariffPanel from "./components/ElectricityTariffPanel.jsx";
+import SitePhotoGallery from "./components/SitePhotoGallery.jsx";
+import ResidentialEvPlanner from "./components/ResidentialEvPlanner.jsx";
+import ImpactEquivalents from "./components/ImpactEquivalents.jsx";
+import InstalledAssetRegister from "./components/InstalledAssetRegister.jsx";
+import { countSitePhotos } from "./utils/sitePhotos.js";
 import { normalizeTariffState, evaluateProjectTariff, gateTariffSizing, tariffToday } from "./utils/electricityTariff.js";
 import { normalizeEquipmentSelection, resolveEquipmentProject, equipmentPanelCount, equipmentBatteryCount, equipmentBankLimits, gateEquipmentSizing } from "./utils/equipmentMatching.js";
 import { WorkspaceHome } from "./components/workspace/WorkspaceHome.jsx";
@@ -403,6 +408,7 @@ const defaultProject = {
   mgHouseholds: 50,
   mgCommercialCustomers: 5,
   mgAnchorLoad: 0,
+  mgAnchorHours: 12,
   mgHouseholdLoadKwh: 1.5,
   mgCommercialLoadKwh: 8.0,
   mgResidentialTariff: 45,
@@ -969,7 +975,7 @@ function useSizing(projectInput, loads) {
     const evSizingDailyKwh = project.systemType === "EV charging" ? evSizingSpec.kw * project.evChargersTotal * project.evDailyChargingHours * project.evOccupancy : 0;
     const mgSizingHouseholdKwh = project.systemType === "Mini-grid" ? project.mgHouseholds * project.mgHouseholdLoadKwh : 0;
     const mgSizingCommercialKwh = project.systemType === "Mini-grid" ? project.mgCommercialCustomers * project.mgCommercialLoadKwh : 0;
-    const mgSizingAnchorKwh = project.systemType === "Mini-grid" ? project.mgAnchorLoad * 12 : 0;
+    const mgSizingAnchorKwh = project.systemType === "Mini-grid" ? project.mgAnchorLoad * Math.max(0, Math.min(24, Number(project.mgAnchorHours ?? 12) || 0)) : 0;
     const mgSizingCommunityDailyKwh = mgSizingHouseholdKwh + mgSizingCommercialKwh + mgSizingAnchorKwh;
     const designDailyKwh = project.systemType === "EV charging" ? evSizingDailyKwh : project.systemType === "Mini-grid" ? mgSizingCommunityDailyKwh : dailyKwh;
     const loadInventoryInvalid = hasInvalidLoadHours(loads);
@@ -1224,7 +1230,7 @@ function useSizing(projectInput, loads) {
     // isMiniGrid already declared above
     const totalHouseholdKwh = isMiniGrid ? project.mgHouseholds * project.mgHouseholdLoadKwh : 0;
     const totalCommercialKwh = isMiniGrid ? project.mgCommercialCustomers * project.mgCommercialLoadKwh : 0;
-    const totalAnchorKwh = isMiniGrid ? project.mgAnchorLoad * 12 : 0;
+    const totalAnchorKwh = isMiniGrid ? project.mgAnchorLoad * Math.max(0, Math.min(24, Number(project.mgAnchorHours ?? 12) || 0)) : 0;
     const communityDailyKwh = totalHouseholdKwh + totalCommercialKwh + totalAnchorKwh;
     const annualResidentialRevenue = totalHouseholdKwh * 365 * project.mgResidentialTariff;
     const annualCommercialRevenue = totalCommercialKwh * 365 * project.mgCommercialTariff;
@@ -2665,6 +2671,7 @@ function EnergyDataImport({ project, setProject, draftLoadItemsV2, setDraftLoadI
 }
 
 function LoadAssessment({
+  project,
   loadAssessmentMode, setLoadAssessmentMode,
   loadItemsV2,            // committed — used by useSizing via toLegacyLoads (read-only here)
   draftLoadItemsV2,       // working copy — all edits go here
@@ -2736,6 +2743,7 @@ function LoadAssessment({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {project?.systemType !== "EV charging" && project?.systemType !== "Mini-grid" && <ResidentialEvPlanner onPrepareLoad={(row) => { setDraftLoadItemsV2((current) => [...current.filter((entry) => entry.id !== row.id), row]); setHasUnappliedLoadChanges(true); }} />}
       <Card title="Sizing basis" subtitle="How this project's loads are established. Blueprint and future-expansion projects carry extra assumptions into the proposal.">
         <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
           {[["existing_site", "🏠 Existing site"], ["blueprint_new_build", "📐 Blueprint / new build"], ["future_expansion", "📈 Future expansion"]].map(([v, lbl]) => (
@@ -4693,7 +4701,7 @@ Subject to final site survey, equipment availability, and engineering approval.`
               ["Wiring", survey.wiringCondition],
               ["Shading", survey.shadingSources.length === 0 || survey.shadingSources.includes("None") ? "None" : survey.shadingSources.join(", ")],
               ["Site Notes", survey.siteNotes || "—"],
-              ["Photos", `${Object.values(survey.photos).filter(Boolean).length} of 10 captured`],
+              ["Photos", `${countSitePhotos(survey.photos)} of 10 captured`],
               ["Engineer Recommendation", survey.engineerRecommendation || "—"],
             ].filter(([, v]) => v).map(([k, v]) => (
               <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--border-light)", fontSize: "12.5px" }}>
@@ -5006,6 +5014,7 @@ function Carbon({ project, setProject, sizing }) {
 
   return (
     <div className="grid-cols-2">
+      <ImpactEquivalents sizing={sizing} />
       <Card title="Emission factor and methodology" subtitle="Kenya's low-carbon grid requires careful factor selection.">
         <div className="form-grid">
           <SelectField label="Emission Factor Source" value={project.emissionFactorSource} onChange={(v) => update("emissionFactorSource", v)} options={factorOptions} />
@@ -5025,7 +5034,7 @@ function Carbon({ project, setProject, sizing }) {
         )}
       </Card>
 
-      <Card title="Credit generation calculation" subtitle="Gross credits minus buffer and registry deductions.">
+      <Card title="Carbon-credit scenario — not issuance" subtitle="Modelled quantities only. Eligibility, validation, verification and registry issuance are not established by this calculation.">
         <div className="form-grid">
           <Field label="Crediting Period" type="number" value={project.carbonCreditingPeriod} onChange={(v) => update("carbonCreditingPeriod", clamp(v, 1, 30))} suffix="yrs" />
           <Field label="Permanence Buffer" type="number" value={project.carbonPermanenceBuffer} onChange={(v) => update("carbonPermanenceBuffer", clamp(v, 0, 0.4))} suffix="0-1" />
@@ -5034,7 +5043,7 @@ function Carbon({ project, setProject, sizing }) {
           <Metric label="Gross Credits" value={`${num(sizing.carbonGrossCredits, 2)} tCO₂`} />
           <Metric label="Buffer Withheld" value={`${num(sizing.permanenceWithholding, 2)} tCO₂`} />
           <Metric label="Issuance Deduction" value={`${num(sizing.issuanceFeeDeduction, 2)} tCO₂`} />
-          <Metric label="Net Tradeable Credits" value={`${num(sizing.netCarbonCredits, 2)} tCO₂`} good={sizing.netCarbonCredits > 0} />
+          <Metric label="Modelled net credit scenario (not issued)" value={`${num(sizing.netCarbonCredits, 2)} tCO₂`} />
           <Metric label="Annual Net Credits" value={`${num(sizing.annualNetCarbonCredits, 2)} tCO₂/yr`} />
           <Metric label="Lifetime Offset P50 / P90" value={`${num(sizing.lifetimeCarbonOffset, 2)} / ${num(sizing.lifetimeCarbonOffsetP90, 2)} tCO₂`} />
         </div>
@@ -6122,11 +6131,13 @@ function MiniGrid({ project, setProject, sizing }) {
   const update = (k, v) => setProject((p) => ({ ...p, [k]: v }));
   return (
     <div className="grid-cols-2">
+      <section className="card field-planning"><h2>Mini-grid planning scope</h2><p className="field-note">Community demand combines household and commercial kWh/day plus anchor kW × operating hours. These are first-pass energy and economics scenarios—not a distribution-network design, approved retail tariff or controller. Coincident peaks, 24-hour dispatch, network losses, voltage drop, protection, metering, customer growth and applicable approvals need separate reviewed evidence.</p></section>
       <Card title="Community load" subtitle="Set subscriber demand and match the Load Assessment daily load to this value.">
         <div className="form-grid">
           <Field label="Households" type="number" value={project.mgHouseholds} onChange={(v) => update("mgHouseholds", Math.max(0, Math.floor(v)))} />
           <Field label="Commercial Customers" type="number" value={project.mgCommercialCustomers} onChange={(v) => update("mgCommercialCustomers", Math.max(0, Math.floor(v)))} />
           <Field label="Anchor Load" type="number" value={project.mgAnchorLoad} onChange={(v) => update("mgAnchorLoad", Math.max(v, 0))} suffix="kW" />
+          <Field label="Anchor operating hours" type="number" value={project.mgAnchorHours ?? 12} onChange={(v) => update("mgAnchorHours", clamp(v, 0, 24))} suffix="hours/day" help="Use the anchor customer's actual schedule. Old projects default to 12 hours; this is not measured demand." />
           <Field label="Household Load" type="number" value={project.mgHouseholdLoadKwh} onChange={(v) => update("mgHouseholdLoadKwh", Math.max(v, 0))} suffix="kWh/day" />
           <Field label="Commercial Load" type="number" value={project.mgCommercialLoadKwh} onChange={(v) => update("mgCommercialLoadKwh", Math.max(v, 0))} suffix="kWh/day" />
           <Metric label="Community Daily Load" value={`${num(sizing.communityDailyKwh, 1)} kWh/day`} />
@@ -6157,7 +6168,7 @@ function MiniGrid({ project, setProject, sizing }) {
       <Card title="Subsidy gap" subtitle="Viability gap for grant or concessional finance applications.">
         <Metric label="Gap / Household / Year" value={money(sizing.subsidyGapPerHousehold)} danger={sizing.subsidyGapPerHousehold > 0} good={sizing.subsidyGapPerHousehold === 0} />
         <div className="carbon-info" style={{ marginTop: "1rem" }}>
-          This figure represents the viability gap that could be covered by REA/REREC subsidies or DFI concessional finance under the Kenya Off-Grid Solar Access Project (KOSAP).
+          This is a modelled funding gap, not confirmation of eligibility for any subsidy or concessional-finance programme. Record current programme terms and obtain the provider's assessment separately.
         </div>
       </Card>
       <Card title="Subscriber economics" subtitle="Connection fee, capex intensity and revenue per user." style={{ gridColumn: "1 / -1" }}>
@@ -6544,7 +6555,7 @@ function FieldDashboard({ survey, setActive }) {
     { key: "roof-shading",   label: "Roof Assessment",  done: survey.roofLengthM > 0 && survey.roofWidthM > 0 },
     { key: "electrical",     label: "Electrical",       done: survey.meterNumber !== "" || !survey.kplcActive },
     { key: "loads",          label: "Load Inventory",   done: false },
-    { key: "site-photos",    label: "Site Photos",      done: Object.values(survey.photos).some(Boolean) },
+    { key: "site-photos",    label: "Site Photos",      done: countSitePhotos(survey.photos) > 0 },
     { key: "safety-risks",   label: "Safety Review",    done: false },
   ];
   const done = steps.filter((s) => s.done).length;
@@ -6657,7 +6668,7 @@ function SiteSurvey({ survey, setSurvey, setActive }) {
     { label: "Roof Assessment", done: survey.roofLengthM > 0 },
     { label: "Electrical",      done: !!survey.meterNumber || !survey.kplcActive },
     { label: "Load Inventory",  done: false },
-    { label: "Site Photos",     done: Object.values(survey.photos).some(Boolean) },
+    { label: "Site Photos",     done: countSitePhotos(survey.photos) > 0 },
     { label: "Safety Review",   done: false },
   ];
   const done = steps.filter((s) => s.done).length;
@@ -7056,57 +7067,8 @@ function ElectricalAssessment({ survey, setSurvey, setActive }) {
   );
 }
 
-function SitePhotos({ survey, setSurvey }) {
-  const set = (k, v) => setSurvey((s) => ({ ...s, photos: { ...s.photos, [k]: v } }));
-  const slots = [
-    "Roof Front", "Roof Close-up", "Shading Source", "DB Box Open",
-    "KPLC Meter", "Inverter Location", "Battery Location", "Cable Route",
-    "Main Entrance", "Site Overview",
-  ];
-  const captured = slots.filter((s) => survey.photos[s]);
-
-  return (
-    <Card title="Site Photos" subtitle={`${captured.length} of ${slots.length} photos captured`}>
-      {captured.length < slots.length && (
-        <AlertBox type="warning">
-          ⚠ {slots.filter((s) => !survey.photos[s]).join(", ")} — still missing. Proposal cannot be finalised until all mandatory photos are captured.
-        </AlertBox>
-      )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "10px", marginTop: "10px" }}>
-        {slots.map((slot) => {
-          const done = !!survey.photos[slot];
-          return (
-            <div
-              key={slot}
-              onClick={() => set(slot, !done)}
-              style={{
-                background: done ? "#ecfdf5" : "#f8fafc",
-                border: `2px ${done ? "solid #10b981" : "dashed #e2e8f0"}`,
-                borderRadius: "10px",
-                aspectRatio: "4/3",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "6px",
-                cursor: "pointer",
-                fontSize: "11px",
-                color: done ? "#065f46" : "#94a3b8",
-                textAlign: "center",
-                padding: "8px",
-              }}
-            >
-              <span style={{ fontSize: "22px" }}>{done ? "✓" : "📷"}</span>
-              <span>{slot}{done ? " ✓" : ""}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ marginTop: "0.75rem", fontSize: "12px", color: "var(--text-muted)" }}>
-        Click a slot to mark as captured. Photos are auto-labelled with the site reference for filing.
-      </div>
-    </Card>
-  );
+function SitePhotos(props) {
+  return <SitePhotoGallery {...props} />;
 }
 
 function SafetyRisks({ survey, setSurvey }) {
@@ -9578,6 +9540,7 @@ function ProjectDelivery({ project, setProject, sizing, accessoriesBoQ, viewMode
       {tab === "checklist" && <DeliveryChecklist delivery={delivery} onChange={onChange} />}
       {tab === "issues" && <DeliveryIssues delivery={delivery} onChange={onChange} showToast={showToast} />}
       {tab === "approvals" && !isTechnician && <DeliveryApprovals delivery={delivery} onChange={onChange} showToast={showToast} />}
+      {!isTechnician && tab === "overview" && <InstalledAssetRegister project={project} setProject={setProject} />}
 
       {!isTechnician && tab === "overview" && (
         <Card title="Delivery details" subtitle="Ownership and expected dates for this project.">
@@ -11164,7 +11127,7 @@ export default function SolariseProSizingApp() {
           {active === "site-survey"    && <SiteSurvey survey={survey} setSurvey={setSurvey} setActive={setActive} />}
           {active === "roof-shading"   && <RoofShading survey={survey} setSurvey={setSurvey} setActive={setActive} />}
           {active === "electrical"     && <ElectricalAssessment survey={survey} setSurvey={setSurvey} setActive={setActive} />}
-          {active === "site-photos"    && <SitePhotos survey={survey} setSurvey={setSurvey} />}
+          {active === "site-photos"    && <SitePhotos survey={survey} setSurvey={setSurvey} projectRef={project.projectRef} cloudEnabled={cloudEnabled} platform={platform} organisationId={activeMembership?.organisationId} projectId={cloudProjectRecord?.id} onOpenEvidence={() => setActive("evidence")} />}
           {active === "safety-risks"   && <SafetyRisks survey={survey} setSurvey={setSurvey} />}
           {/* Engineering tabs */}
           {active === "dashboard"  && (viewMode === "client"
@@ -11172,6 +11135,7 @@ export default function SolariseProSizingApp() {
             : <Dashboard project={project} sizing={sizing} setActive={setActive} readiness={readiness} advisory={advisory} governance={governance} panelLayout={panelLayout} roofWarnings={roofWarnings} simWarnings={simWarnings} hasUnappliedLoadChanges={hasUnappliedLoadChanges} />)}
           {active === "project"    && <ProjectInputs project={project} setProject={setProject} setActive={setActive} />}
           {active === "loads"      && <LoadAssessment
+            project={project}
             loadAssessmentMode={loadAssessmentMode}
             setLoadAssessmentMode={setLoadAssessmentMode}
             loadItemsV2={loadItemsV2}

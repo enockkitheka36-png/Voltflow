@@ -159,6 +159,7 @@ export function buildDesignInputs(input = {}) {
       mgCommercialCustomers: project.mgCommercialCustomers,
       mgCommercialLoadKwh: project.mgCommercialLoadKwh,
       mgAnchorLoad: project.mgAnchorLoad,
+      ...(project.systemType === "Mini-grid" && Number(project.mgAnchorHours ?? 12) !== 12 ? { mgAnchorHours: project.mgAnchorHours } : {}),
       mgResidentialTariff: project.mgResidentialTariff,
       mgCommercialTariff: project.mgCommercialTariff,
       mgAnchorTariff: project.mgAnchorTariff,
@@ -200,7 +201,7 @@ export function computeOptionSizing(project = {}, loads = [], config = {}) {
     ? finite(EV_KW[project.evChargerType], 7.4) * finite(project.evChargersTotal) * finite(project.evDailyChargingHours) * finite(project.evOccupancy)
     : 0;
   const mgDailyKwh = isMG
-    ? finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) + finite(project.mgAnchorLoad) * 12
+    ? finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) + finite(project.mgAnchorLoad) * clamp(project.mgAnchorHours ?? 12, 0, 24)
     : 0;
   const dayKwh = loads.reduce((sum, load) => sum + finite(load.qty) * finite(load.watts) * finite(load.dayHours) / 1000, 0);
   const nightKwh = loads.reduce((sum, load) => sum + finite(load.qty) * finite(load.watts) * finite(load.nightHours) / 1000, 0);
@@ -258,7 +259,7 @@ export function computeOptionSizing(project = {}, loads = [], config = {}) {
   const annualOM = totalCost * finite(project.oAndMRate);
   const displacement = Math.min(0.85, finite(project.solarCoverage) * finite(project.gensetSolarDirectDisplacement, 0.65) + (usableKwh > 0 ? finite(project.gensetBatteryTimeShiftDisplacement, 0.15) : 0));
   const gensetSavings = project.systemType === "Genset hybrid" ? finite(project.gensetFuelLPerHour) * finite(project.gensetFuelCostKes) * finite(project.gensetRunHoursPerDay) * displacement * 365 + finite(project.gensetMaintenanceCostYr) * displacement * 0.5 : 0;
-  const miniGridRevenue = (finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) * finite(project.mgResidentialTariff) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) * finite(project.mgCommercialTariff) + finite(project.mgAnchorLoad) * 12 * finite(project.mgAnchorTariff)) * 365;
+  const miniGridRevenue = (finite(project.mgHouseholds) * finite(project.mgHouseholdLoadKwh) * finite(project.mgResidentialTariff) + finite(project.mgCommercialCustomers) * finite(project.mgCommercialLoadKwh) * finite(project.mgCommercialTariff) + finite(project.mgAnchorLoad) * clamp(project.mgAnchorHours ?? 12, 0, 24) * finite(project.mgAnchorTariff)) * 365;
   const annualNet = isEV ? dailyKwh * 365 * (finite(project.evTariffKes) - finite(project.gridTariff)) - annualOM : isMG ? miniGridRevenue - subscribers * finite(project.mgOpexPerSubscriberYr) - annualOM : annualSavings + gensetSavings - annualOM;
   return gateTariffSizing(gateEquipmentSizing(project, {
     pr, panels, actualKwp, battKwh, battModules, invKw, totalCost, annualSavings, annualNet,

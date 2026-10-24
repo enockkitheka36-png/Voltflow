@@ -10,6 +10,7 @@
  */
 
 import { computeNightAutonomy } from "./nightAutonomy.js";
+import { countSitePhotos } from "./sitePhotos.js";
 
 const STATUS = { NOT_STARTED: "not_started", INCOMPLETE: "incomplete", NEEDS_REVIEW: "needs_review", COMPLETE: "complete" };
 
@@ -88,7 +89,7 @@ export function buildProjectReadiness(
       { label: "Roof dimensions", ok: (Number(survey.roofLengthM) || 0) > 0 && (Number(survey.roofWidthM) || 0) > 0 },
       { label: "Roof type", ok: !!survey.roofType },
       { label: "Earthing captured", ok: survey.earthingAvailable !== undefined && survey.earthingAvailable !== null },
-      { label: "Site photos", ok: Object.values(survey.photos || {}).some(Boolean) },
+      { label: "Site photos", ok: countSitePhotos(survey.photos) > 0 },
     ], false, { highlightId: "survey-fields" });
 
   // ── Load inventory (the headline fix) ────────────────────────────────────────

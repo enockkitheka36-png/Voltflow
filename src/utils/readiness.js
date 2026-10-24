@@ -1,3 +1,5 @@
+import { countSitePhotos } from "./sitePhotos.js";
+
 /**
  * Solarise Pro v8 — Project Readiness Engine
  * Pure functions — no React, no side effects.
@@ -31,7 +33,7 @@ export function calculateReadiness(project, loads, survey, sizing, layoutInfo) {
     { label: "Monthly bill",             pts: 2, pass: (survey?.monthlyBill ?? project.monthlyBill ?? 0) > 0 },
     { label: "Earthing status captured", pts: 2, pass: survey?.earthingAvailable !== undefined && survey?.earthingAvailable !== null },
     { label: "Site notes",               pts: 1, pass: !!(survey?.siteNotes && survey.siteNotes.length > 5) },
-    { label: "Photos collected",         pts: 2, pass: Object.keys(survey?.photos ?? {}).length >= 2 },
+    { label: "Photos collected",         pts: 2, pass: countSitePhotos(survey?.photos) >= 2 },
     { label: "Client objectives",        pts: 2, pass: (survey?.clientObjectives ?? []).length > 0 },
     { label: "Surveyor entered",         pts: 1, pass: !!(survey?.surveyor) },
   ];
